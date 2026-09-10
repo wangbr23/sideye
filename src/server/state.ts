@@ -266,6 +266,24 @@ export function approvePlan(state: AppState): ApprovePlanResult {
   return { ok: true, planApproved: true }
 }
 
+// Control-tier round capture (LLD §4, §5c-5): consented capture of round N+1,
+// gated on the fix flow having reported (statuses, or a stall — §9 keeps the
+// review usable). One round per status report (`roundPrompted`).
+export type CaptureConsentedResult = { ok: true; round: Round } | { ok: false; error: string }
+
+export async function captureConsentedRound(state: AppState): Promise<CaptureConsentedResult> {
+  const submission = state.submission
+  if (submission === undefined || (submission.statuses === undefined && submission.stalled !== true)) {
+    return { ok: false, error: "a new round is only offered after the fix flow reports statuses" }
+  }
+  if (submission.roundPrompted) {
+    return { ok: false, error: "a round was already captured for this status report" }
+  }
+  const round = await captureRound(state)
+  submission.roundPrompted = true
+  return { ok: true, round }
+}
+
 function describeValue(value: unknown): string {
   return typeof value === "string" ? `"${value}"` : String(value)
 }

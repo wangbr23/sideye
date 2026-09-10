@@ -1,9 +1,10 @@
 import type { AppState } from "../types.ts"
 import type { RouteHandler } from "./http.ts"
 import { sseResponse, broadcast } from "./sse.ts"
-import { addComment, acceptFinding, submitReview, askQuestion, approvePlan } from "./state.ts"
+import { addComment, acceptFinding, submitReview, askQuestion, approvePlan, captureConsentedRound } from "./state.ts"
 import { runPlan } from "./plan.ts"
 import { startFixAndStatus } from "./fix.ts"
+import { runAnalysis } from "./analysis.ts"
 import type { OpenCodeClient } from "../session/client.ts"
 
 export interface RouteDependencies {
@@ -69,6 +70,18 @@ export function buildHandlers(state: AppState, deps: RouteDependencies = {}): Re
       // status card fills via SSE status.ready (LLD §5c-4)
       if (deps.client) startFixAndStatus(state, deps.client)
       return Response.json({ approved: true })
+    },
+    "POST /api/rounds": async () => {
+      const result = await captureConsentedRound(state)
+      if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
+      broadcast(state, "round.prompt", { round: result.round.n })
+      // new round → new analysis, in the background like the fix flow
+      if (deps.client) {
+        void runAnalysis(state, result.round, deps.client).catch((err) => {
+          console.error("analysis failed for round", result.round.n, err)
+        })
+      }
+      return Response.json({ round: result.round })
     },
     "POST /api/questions": async (req) => {
       if (!deps.client) {
