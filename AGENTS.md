@@ -3,16 +3,16 @@
 An OpenCode plugin that provides a comprehensive code review platform.
 
 ## Stack
-- Language/runtime: Not decided
-- Framework: Not decided
-- Package manager: Not decided
+- Language/runtime: TypeScript on Bun
+- Framework: Bun built-ins (`Bun.serve`, `bun test`) — no bundler
+- Package manager: Bun
 
 ## Commands
-- Install: Not configured
+- Install: `bun install`
 - Dev/run: Not configured
-- Test: Not configured
-- Lint/typecheck: Not configured
-- Build: Not configured
+- Test: `bun test`
+- Lint/typecheck: `bun run typecheck` (tsc --noEmit)
+- Build: Not configured (no bundler — TS served/compiled by Bun)
 
 ## Conventions
 Cross-project coding principles live in the user's global instructions. Project coding conventions live in `CLEANCODE.md`; keep detailed code-quality rules there so this file stays focused on project context.

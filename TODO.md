@@ -6,7 +6,7 @@ Task format: `- [ ] \`T<n>\` <description> — <manual|agent>[, complexity: simp
 
 ## Foundation
 
-- [ ] `T1` Scaffold the sideye Bun package (package.json with bin/exports, tsconfig, Bun test setup) and define the shared data model types per LLD §3 — agent, complexity: simple, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
+- [x] `T1` Scaffold the sideye Bun package (package.json with bin/exports, tsconfig, Bun test setup) and define the shared data model types per LLD §3 — agent, complexity: simple, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T2` Capture commit targets: diff vs first parent, root-commit handling, merge rejection at launch — agent, complexity: simple, depends-on: T10, T11, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T3` Analysis panel UI: per-file purpose, per-hunk rationale, evidence citations, evidence-vs-inference labels, distinct findings section — agent, complexity: complex, depends-on: T16, T19, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T4` Comments UI (three scopes, round-anchored, author display, mark-as-lesson checkbox) + Q&A UI — agent, complexity: complex, depends-on: T3, T15, T20, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md

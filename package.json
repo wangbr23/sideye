@@ -1,0 +1,20 @@
+{
+  "name": "sideye",
+  "version": "0.1.0",
+  "description": "OpenCode plugin providing a browser-based code review platform",
+  "type": "module",
+  "bin": {
+    "sideye": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  }
+}
