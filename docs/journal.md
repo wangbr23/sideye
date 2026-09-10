@@ -49,3 +49,9 @@ Committed the planning docs left uncommitted by prior sessions first, then compl
 ## 2026-09-10 — T13 done: AppState store + round assembly
 
 `src/server/state.ts`: `createState` (plain AppState with token/sessionID/repoPath/target, empty rounds/comments/analysis/sseClients), `captureTarget` (worktree → tracked diff + untracked; commit → commit diff, untracked ignored), `parseRoundFiles` (parsed tracked files + synthetic untracked files), and `captureRound` appending frozen Round N+1 — clean worktree gives a valid file-less round. 6 store/assembly tests; suite 44 pass, typecheck clean. Comment/analysis/submission mutators intentionally deferred to T15/T19/T21.
+
+## 2026-09-10 — T14 done: state projection + SSE channel
+
+`projectState` serves the open tier everything reviewers and agents may read but **excludes the reviewer token and SSE client set** (the token only ever travels in the reviewer URL). `buildHandlers(state)` maps `GET /api/state` and `GET /api/events`; `sse.ts` fans out `event:`/`data:` frames to all connected controllers and drops failed/cancelled ones. `http.ts` now consults the handler map for open-tier routes too (control routes keep the bearer guard first). One LLD mechanical correction: `AppState.sseClients` is `Set<ReadableStreamDefaultController<Uint8Array>>` — the actual push mechanism — not `WritableStream` as sketched. Real-stream tests: token non-leak, SSE connect/fan-out/drop. Suite 48 pass, typecheck clean.
+
+Stopped after 8 tasks (T1, T9, T10, T11, T12, T2, T13, T14) — user asked for ~6 then a manual /compact. Remaining frontier when resuming: T15, T16, T17, T18.

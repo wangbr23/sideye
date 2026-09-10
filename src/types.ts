@@ -127,5 +127,6 @@ export interface AppState {
     statuses?: RequestStatus[]
     roundPrompted?: boolean
   }
-  sseClients: Set<WritableStream>
+  // connected SSE client stream controllers (server pushes events into these)
+  sseClients: Set<ReadableStreamDefaultController<Uint8Array>>
 }

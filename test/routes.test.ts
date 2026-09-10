@@ -1,0 +1,126 @@
+import { describe, expect, test, beforeEach, afterEach } from "bun:test"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { $ } from "bun"
+import { createState, captureRound } from "../src/server/state.ts"
+import { buildHandlers, projectState } from "../src/server/routes.ts"
+import { broadcast } from "../src/server/sse.ts"
+import { generateReviewerToken, startReviewServer } from "../src/server/http.ts"
+
+let repoDir: string
+
+beforeEach(async () => {
+  repoDir = mkdtempSync(join(tmpdir(), "sideye-routes-"))
+  await $`git init`.cwd(repoDir).quiet()
+  await $`git config user.email test@sideye.local`.cwd(repoDir).quiet()
+  await $`git config user.name Sideye Test`.cwd(repoDir).quiet()
+  writeFileSync(join(repoDir, "a.txt"), "one\n")
+  await $`git add a.txt`.cwd(repoDir).quiet()
+  await $`git commit -m base`.cwd(repoDir).quiet()
+})
+
+afterEach(() => {
+  rmSync(repoDir, { recursive: true, force: true })
+})
+
+function startServer(state: ReturnType<typeof createState>) {
+  return startReviewServer({
+    repoPath: repoDir,
+    token: generateReviewerToken(),
+    staticDir: mkdtempSync(join(tmpdir(), "sideye-routes-static-")),
+    handlers: buildHandlers(state),
+  })
+}
+
+const base = (server: { port: number }) => `http://127.0.0.1:${server.port}`
+
+async function readChunk(res: Response): Promise<string> {
+  const body = res.body
+  if (!body) throw new Error("no response body")
+  const reader = body.getReader()
+  const { value } = await reader.read()
+  reader.releaseLock()
+  return new TextDecoder().decode(value)
+}
+
+describe("GET /api/state", () => {
+  test("projects rounds/comments/analysis without leaking the token", async () => {
+    const state = createState({ token: generateReviewerToken(), sessionID: "ses_1", repoPath: repoDir, target: { kind: "worktree" } })
+    writeFileSync(join(repoDir, "a.txt"), "changed\n")
+    await captureRound(state)
+
+    const server = startServer(state)
+    try {
+      const res = await fetch(`${base(server)}/api/state`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as Record<string, unknown>
+      expect(JSON.stringify(body)).not.toContain(state.token)
+      expect(body.sessionID).toBe("ses_1")
+      expect(body.repoPath).toBe(repoDir)
+      expect(Array.isArray(body.rounds)).toBe(true)
+      const rounds = body.rounds as { n: number; files: { path: string }[] }[]
+      expect(rounds[0]?.n).toBe(1)
+      expect(rounds[0]?.files[0]?.path).toBe("a.txt")
+      expect(body.analysis).toEqual({})
+      expect(body.submission).toBeNull()
+    } finally {
+      server.stop()
+    }
+  })
+
+  test("direct projection excludes token and sseClients", () => {
+    const state = createState({ token: generateReviewerToken(), sessionID: "ses_1", repoPath: repoDir, target: { kind: "worktree" } })
+    const projected = JSON.stringify(projectState(state))
+    expect(projected).not.toContain(state.token)
+    expect(projected).not.toContain("sseClients")
+  })
+})
+
+describe("GET /api/events", () => {
+  test("streams broadcast events to connected clients", async () => {
+    const state = createState({ token: generateReviewerToken(), sessionID: "ses_1", repoPath: repoDir, target: { kind: "worktree" } })
+    const server = startServer(state)
+    try {
+      const res = await fetch(`${base(server)}/api/events`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toContain("text/event-stream")
+
+      const first = await readChunk(res)
+      expect(first).toContain(": connected")
+
+      broadcast(state, "analysis.update", { round: 1 })
+      const chunk = await readChunk(res)
+      expect(chunk).toContain("event: analysis.update")
+      expect(chunk).toContain(`data: ${JSON.stringify({ round: 1 })}`)
+    } finally {
+      server.stop()
+    }
+  })
+
+  test("fans out to multiple clients and drops cancelled ones", async () => {
+    const state = createState({ token: generateReviewerToken(), sessionID: "ses_1", repoPath: repoDir, target: { kind: "worktree" } })
+    const server = startServer(state)
+    try {
+      const resA = await fetch(`${base(server)}/api/events`)
+      const resB = await fetch(`${base(server)}/api/events`)
+      await readChunk(resA)
+      await readChunk(resB)
+      expect(state.sseClients.size).toBe(2)
+
+      broadcast(state, "answer", { text: "hello" })
+      const aText = await readChunk(resA)
+      const bText = await readChunk(resB)
+      expect(aText).toContain("hello")
+      expect(bText).toContain("hello")
+
+      await resA.body?.cancel()
+      broadcast(state, "answer", { text: "second" }) // must not throw on the cancelled client
+      const bText2 = await readChunk(resB)
+      expect(bText2).toContain("second")
+      expect(state.sseClients.size).toBeLessThan(2)
+    } finally {
+      server.stop()
+    }
+  })
+})

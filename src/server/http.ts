@@ -57,10 +57,10 @@ async function handleRequest(req: Request, options: ReviewServerOptions): Promis
       if (!isReviewer(req, options.token)) {
         return Response.json({ error: "reviewer token required" }, { status: 401 })
       }
-      const handler = options.handlers[`${req.method} ${url.pathname}`]
-      if (!handler) return Response.json({ error: "not found" }, { status: 404 })
-      return await handler(req, url)
     }
+
+    const handler = options.handlers[`${req.method} ${url.pathname}`]
+    if (handler) return await handler(req, url)
 
     const staticFile = STATIC_FILES[url.pathname]
     if (staticFile !== undefined) {
