@@ -45,3 +45,7 @@ Committed the planning docs left uncommitted by prior sessions first, then compl
 ## 2026-09-10 — T2 done: commit-target capture
 
 `captureCommitDiff(repoPath, sha)`: merge detection via `git show -s --format=%P` (2+ parents → clear rejection error), root commit via `git diff-tree --root -r -p/--numstat --format=`, otherwise `git diff <first-parent> <sha>` + numstat. 4 tests (first-parent diff, root commit, merge rejection, invalid sha); suite 38 pass, typecheck clean. Frontier-order correction: T2 became unblocked alongside T13 (T10+T11 done) and is lower-numbered, so it went first — recompute the frontier every round, not just once.
+
+## 2026-09-10 — T13 done: AppState store + round assembly
+
+`src/server/state.ts`: `createState` (plain AppState with token/sessionID/repoPath/target, empty rounds/comments/analysis/sseClients), `captureTarget` (worktree → tracked diff + untracked; commit → commit diff, untracked ignored), `parseRoundFiles` (parsed tracked files + synthetic untracked files), and `captureRound` appending frozen Round N+1 — clean worktree gives a valid file-less round. 6 store/assembly tests; suite 44 pass, typecheck clean. Comment/analysis/submission mutators intentionally deferred to T15/T19/T21.

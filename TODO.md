@@ -24,7 +24,7 @@ Task format: `- [ ] \`T<n>\` <description> — <manual|agent>[, complexity: simp
 
 ## Server state and routes
 
-- [ ] `T13` AppState store plus round assembly (capture + parse → frozen Round) with empty-diff handling — agent, complexity: complex, depends-on: T10, T11, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
+- [x] `T13` AppState store plus round assembly (capture + parse → frozen Round) with empty-diff handling — agent, complexity: complex, depends-on: T10, T11, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T14` State projection route (`/api/state`) + SSE events channel (`/api/events`) — agent, complexity: simple, depends-on: T12, T13, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T15` Comments route (open tier): required author attribution, scope/anchor validation, 400 on missing author — agent, complexity: simple, depends-on: T14, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T16` Read-only diff frontend: page shell, hunk rendering from server JSON, round selector, SSE subscribe with reconnect refetch — agent, complexity: complex, depends-on: T14, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
