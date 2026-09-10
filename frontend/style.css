@@ -288,9 +288,170 @@ main {
   white-space: pre;
 }
 
+#overall-comment {
+  border: 1px solid #d0d7de;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#overall-comment:hover {
+  background: #eceef1;
+}
+
 .diff-line {
   display: flex;
   white-space: pre;
+  cursor: pointer;
+}
+
+.comment-form,
+.ask-box,
+.qa-card,
+.comment-card {
+  background: #f6f7f9;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 8px;
+  font-family: system-ui, sans-serif;
+}
+
+.comment-form {
+  background: #fff;
+  border-color: #0969da;
+}
+
+.scope-tag {
+  font-size: 11px;
+  color: #57606a;
+  background: #eceef1;
+  border-radius: 10px;
+  padding: 1px 8px;
+  align-self: center;
+}
+
+.comment-input,
+.ask-input {
+  width: 100%;
+  min-height: 60px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.ask-input {
+  min-height: 0;
+}
+
+.lesson-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  margin: 6px 0;
+  cursor: pointer;
+}
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.post-button,
+.cancel-button,
+.ask-button {
+  border: 1px solid #1f2430;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.post-button {
+  background: #1f2430;
+  color: #fff;
+}
+
+.form-status {
+  font-size: 12px;
+  color: #b3261e;
+}
+
+.comment-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.comment-author {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.comment-where {
+  font-size: 12px;
+  color: #57606a;
+  font-family: ui-monospace, monospace;
+}
+
+.comment-body {
+  margin: 6px 0 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.comment-card.lesson {
+  border-left: 3px solid #8250df;
+}
+
+.lesson-badge {
+  background: #8250df;
+}
+
+.qa-card {
+  background: #eef4fb;
+  border-color: #9cc0e8;
+}
+
+.qa-question,
+.qa-answer {
+  margin: 0;
+  font-size: 13px;
+}
+
+.qa-answer {
+  margin-top: 4px;
+  color: #24292f;
+}
+
+.file-comment-button {
+  margin-left: auto;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  border-radius: 6px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ask-box {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ask-box .ask-input {
+  flex: 1;
 }
 
 .diff-line .ln {

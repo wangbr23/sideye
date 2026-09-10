@@ -11,6 +11,8 @@ let reviewState = null // latest /api/state projection
 let selectedRound = null // null → latest round
 let activeTab = "Analysis"
 let reconnectFailures = 0
+let openForm = null // draft comment: { scope, anchor, text, isLesson }
+let qaLog = [] // transient Q&A exchanges this tab has seen
 
 const hunkObserver = new IntersectionObserver(
   (entries) => {
@@ -86,7 +88,16 @@ function renderFile(file) {
   header.append(el("span", "path", file.path), el("span", `badge ${file.status}`, file.status))
   if (file.binary) header.append(el("span", "badge note", "binary — not shown"))
   if (file.truncated) header.append(el("span", "badge note", "truncated"))
+  if (selectedRound !== null && !file.binary) {
+    const commentButton = el("button", "file-comment-button", "Comment")
+    commentButton.addEventListener("click", () => beginComment("file", { round: selectedRound, file: file.path }))
+    header.append(commentButton)
+  }
   section.append(header)
+
+  if (openForm !== null && openForm.scope === "file" && openForm.anchor.round === selectedRound && openForm.anchor.file === file.path) {
+    section.append(renderCommentForm())
+  }
 
   if (file.binary || file.hunks.length === 0) {
     section.append(el("p", "empty", file.binary ? "Binary content is not rendered." : "No content hunks."))
@@ -98,9 +109,22 @@ function renderFile(file) {
     box.dataset.hunkIndex = String(hunk.index)
     box.style.minHeight = `${hunk.lines.length * 21 + 24}px`
     section.append(box)
-    hunkObserver.observe(box)
+    // A draft anchored to this hunk needs its lines rendered now — the form
+    // must mount inline, and lazily-rendered boxes have no rows to anchor to.
+    if (formTargetsHunk(file.path, hunk.index)) renderHunkInto(box)
+    else hunkObserver.observe(box)
   }
   return section
+}
+
+function formTargetsHunk(filePath, hunkIndex) {
+  return (
+    openForm !== null &&
+    openForm.scope === "inline" &&
+    openForm.anchor.round === selectedRound &&
+    openForm.anchor.file === filePath &&
+    openForm.anchor.hunkIndex === hunkIndex
+  )
 }
 
 function renderHunkInto(box) {
@@ -116,16 +140,123 @@ function renderHunkInto(box) {
   for (const line of hunk.lines) {
     const kind = line.origin === "+" ? "add" : line.origin === "-" ? "del" : "ctx"
     const row = el("div", `diff-line ${kind}`)
+    row.dataset.origin = line.origin
+    row.dataset.line = String(line.origin === "-" ? oldLine : newLine)
     row.append(
       el("span", "ln", line.origin === "+" ? "" : String(oldLine)),
       el("span", "ln", line.origin === "-" ? "" : String(newLine)),
       el("span", "origin", line.origin),
       el("span", "content", line.content),
     )
+    row.addEventListener("click", () => gutterClick(box, row))
     box.append(row)
+    if (formTargetsHunk(box.dataset.filePath, hunk.index)) {
+      const target = openForm.anchor.lineRange !== undefined && line.origin !== "-" ? newLine : null
+      if (target === null || target === openForm.anchor.lineRange[0]) {
+        box.append(renderCommentForm())
+      }
+    }
     if (line.origin !== "+") oldLine++
     if (line.origin !== "-") newLine++
   }
+  // Deleted-line clicks have no new-side anchor — the form lands at hunk end.
+  if (formTargetsHunk(box.dataset.filePath, hunk.index) && openForm.anchor.lineRange === undefined) {
+    box.append(renderCommentForm())
+  }
+}
+
+// Gutter click (LLD §8): a new-side or context line anchors to that line; a
+// deleted line has no new-side number, so it anchors to the hunk without a
+// lineRange.
+function gutterClick(box, row) {
+  if (selectedRound === null) return
+  const anchor = {
+    round: selectedRound,
+    file: box.dataset.filePath,
+    hunkIndex: Number(box.dataset.hunkIndex),
+  }
+  if (row.dataset.origin !== "-") {
+    const line = Number(row.dataset.line)
+    anchor.lineRange = [line, line]
+  }
+  beginComment("inline", anchor)
+}
+
+function beginComment(scope, anchor) {
+  openForm = { scope, anchor, text: openForm?.text ?? "", isLesson: false }
+  if (scope === "overall") activeTab = "Comments"
+  render()
+}
+
+function renderCommentForm() {
+  const form = el("div", "comment-form")
+  const scopeLabel =
+    openForm.scope === "inline"
+      ? `inline · ${openForm.anchor.file} · hunk ${openForm.anchor.hunkIndex}`
+      : openForm.scope === "file"
+        ? `file · ${openForm.anchor.file}`
+        : "overall"
+  const textarea = el("textarea", "comment-input")
+  textarea.placeholder = `Comment (author: human, ${scopeLabel})`
+  textarea.value = openForm.text
+  textarea.addEventListener("input", () => {
+    openForm.text = textarea.value
+  })
+
+  const lessonLabel = el("label", "lesson-check")
+  const lessonBox = el("input")
+  lessonBox.type = "checkbox"
+  lessonBox.checked = openForm.isLesson
+  lessonBox.addEventListener("change", () => {
+    openForm.isLesson = lessonBox.checked
+  })
+  lessonLabel.append(lessonBox, el("span", undefined, " Mark as lesson"))
+
+  const status = el("span", "form-status")
+  const post = el("button", "post-button", "Post")
+  post.addEventListener("click", async () => {
+    if (openForm.text.trim() === "") {
+      status.textContent = "Write something first."
+      return
+    }
+    post.disabled = true
+    try {
+      const res = await fetch("/api/comments", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          author: "human",
+          scope: openForm.scope,
+          anchor: openForm.anchor,
+          body: openForm.text,
+          isLesson: openForm.isLesson,
+        }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        status.textContent = `Failed (${res.status}): ${body.error ?? "unknown error"}`
+        post.disabled = false
+        return
+      }
+      openForm = null
+      await refresh()
+    } catch (err) {
+      status.textContent = `Failed: ${String(err)}`
+      post.disabled = false
+    }
+  })
+  const cancel = el("button", "cancel-button", "Cancel")
+  cancel.addEventListener("click", () => {
+    openForm = null
+    render()
+  })
+
+  form.append(scopeTag(scopeLabel), textarea, lessonLabel, el("div", "form-actions", [post, cancel, status]))
+  return form
+}
+
+function scopeTag(label) {
+  return el("span", "scope-tag", label)
 }
 
 function connectEvents() {
@@ -144,6 +275,14 @@ function connectEvents() {
   for (const name of SSE_EVENTS) {
     source.addEventListener(name, () => refresh())
   }
+  // Answers aren't in /api/state (transient) — the event payload carries them.
+  // The asking tab already logged it via the HTTP response; the id dedupes.
+  source.addEventListener("answer", (event) => {
+    const data = JSON.parse(event.data)
+    if (qaLog.some((qa) => qa.id === data.id)) return
+    qaLog.unshift({ id: data.id, question: data.question, answer: data.answer })
+    renderPanel()
+  })
 }
 
 function setBanner(visible) {
@@ -163,6 +302,11 @@ function el(tag, className, content) {
 document.getElementById("round-select").addEventListener("change", (event) => {
   selectedRound = Number(event.target.value)
   render()
+})
+
+document.getElementById("overall-comment").addEventListener("click", () => {
+  if (selectedRound === null) return
+  beginComment("overall", { round: selectedRound })
 })
 
 // Side panel (LLD §8): tabs for Analysis, Findings, Comments, Status. Comments
@@ -189,12 +333,86 @@ function renderTabContent() {
     case "Findings":
       return renderFindingsTab(analysis)
     case "Comments":
-      return el("p", "empty", "No comments yet.")
+      return renderCommentsTab()
     case "Status":
       return el("p", "empty", "No submission yet.")
     default:
       return el("p", "empty", "Nothing here.")
   }
+}
+
+// Comments tab: the overall-scope draft (opened from the header), the Q&A ask
+// box with this tab's seen answers, and the selected round's comments with
+// author attribution (LLD §4, §8).
+function renderCommentsTab() {
+  const wrap = el("div", "comments-tab")
+  if (openForm !== null && openForm.scope === "overall") wrap.append(renderCommentForm())
+  wrap.append(renderAskBox())
+  for (const qa of qaLog) {
+    const card = el("div", "qa-card")
+    card.append(el("p", "qa-question", `Q: ${qa.question}`), el("p", "qa-answer", `A: ${qa.answer}`))
+    wrap.append(card)
+  }
+  const comments = reviewState.comments
+    .filter((c) => c.anchor.round === selectedRound)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  if (comments.length === 0 && qaLog.length === 0) {
+    wrap.append(el("p", "empty", "No comments or answers yet — click a diff line to comment."))
+  }
+  for (const comment of comments) {
+    const card = el("div", `comment-card${comment.isLesson ? " lesson" : ""}`)
+    const where =
+      comment.scope === "overall"
+        ? "overall"
+        : comment.scope === "file"
+          ? comment.anchor.file
+          : `${comment.anchor.file} · hunk ${comment.anchor.hunkIndex}${comment.anchor.lineRange !== undefined ? ` · lines ${comment.anchor.lineRange[0]}-${comment.anchor.lineRange[1]}` : ""}`
+    card.append(
+      el("div", "comment-head", [
+        el("span", "comment-author", comment.author),
+        el("span", "scope-tag", comment.scope),
+        el("span", "comment-where", where),
+        ...(comment.isLesson ? [el("span", "badge lesson-badge", "lesson")] : []),
+      ]),
+      el("p", "comment-body", comment.body),
+    )
+    wrap.append(card)
+  }
+  return wrap
+}
+
+function renderAskBox() {
+  const box = el("div", "ask-box")
+  const input = el("input", "ask-input")
+  input.placeholder = "Ask the reviewing agent a question…"
+  const ask = el("button", "ask-button", "Ask")
+  ask.addEventListener("click", async () => {
+    if (input.value.trim() === "") return
+    ask.disabled = true
+    ask.textContent = "Asking…"
+    try {
+      const res = await fetch("/api/questions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ author: "human", question: input.value }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || body.answer === undefined) {
+        qaLog.unshift({ question: input.value, answer: `Ask failed (${res.status}): ${body.error ?? "unknown"}` })
+      } else if (!qaLog.some((qa) => qa.id === body.id)) {
+        // the SSE event may arrive before this HTTP response (broadcast fires
+        // first server-side) — only one of the two paths logs each answer
+        qaLog.unshift({ id: body.id, question: input.value, answer: body.answer })
+      }
+      input.value = ""
+      renderPanel()
+    } finally {
+      ask.disabled = false
+      ask.textContent = "Ask"
+    }
+  })
+  box.append(input, ask)
+  return box
 }
 
 function renderAnalysisTab(analysis) {

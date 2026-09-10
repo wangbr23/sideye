@@ -55,8 +55,11 @@ export function buildHandlers(state: AppState, deps: RouteDependencies = {}): Re
       const question = askQuestion(state, input)
       if (!question.ok) return Response.json({ error: question.error }, { status: 400 })
       const answer = await answerQuestion(deps.client, state, question.prompt)
-      broadcast(state, "answer", { question: question.question, answer })
-      return Response.json({ answer })
+      // The id lets the asking tab (HTTP response) and other tabs (SSE event)
+      // dedupe the same answer.
+      const answerId = crypto.randomUUID()
+      broadcast(state, "answer", { id: answerId, question: question.question, answer })
+      return Response.json({ id: answerId, answer })
     },
   }
 }
