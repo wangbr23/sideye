@@ -113,16 +113,18 @@ describe("control-tier routes (findings/accept, submit)", () => {
         body: JSON.stringify({ requests: ["split the loop"] }),
       })
       expect(submit.status).toBe(200)
-      const payload = (await submit.json()) as {
-        requests: { id: string; text: string; origin: string }[]
-        lessons: unknown[]
+      const submitBody = (await submit.json()) as {
+        payload: { requests: { id: string; text: string; origin: string }[]; lessons: unknown[] }
+        plan: unknown
       }
+      const payload = submitBody.payload
       expect(payload.requests).toHaveLength(2)
       expect(payload.requests[1]).toEqual({
         id: expect.any(String),
         text: "off-by-one in the loop",
         origin: "accepted-finding",
       })
+      expect(submitBody.plan).toBeNull() // no linked client in this fixture
 
       const projected = (await (await fetch(`${base(server)}/api/state`)).json()) as {
         acceptedFindings: unknown[]

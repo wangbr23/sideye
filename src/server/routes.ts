@@ -1,7 +1,8 @@
 import type { AppState } from "../types.ts"
 import type { RouteHandler } from "./http.ts"
 import { sseResponse, broadcast } from "./sse.ts"
-import { addComment, acceptFinding, submitReview, askQuestion } from "./state.ts"
+import { addComment, acceptFinding, submitReview, askQuestion, approvePlan } from "./state.ts"
+import { runPlan } from "./plan.ts"
 import type { OpenCodeClient } from "../session/client.ts"
 
 export interface RouteDependencies {
@@ -45,7 +46,25 @@ export function buildHandlers(state: AppState, deps: RouteDependencies = {}): Re
       const input = await parseJson(req)
       const result = submitReview(state, input)
       if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
-      return Response.json(result.payload)
+      if (!deps.client) {
+        // no linked session — the payload serializes but the plan flow cannot
+        // run; loud degradation rather than a silent skip
+        return Response.json({ payload: result.payload, plan: null })
+      }
+      try {
+        const plan = await runPlan(state, deps.client)
+        return Response.json({ payload: result.payload, plan })
+      } catch (err) {
+        return Response.json(
+          { error: err instanceof Error ? err.message : String(err) },
+          { status: 500 },
+        )
+      }
+    },
+    "POST /api/plan/approve": () => {
+      const result = approvePlan(state)
+      if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
+      return Response.json({ approved: true })
     },
     "POST /api/questions": async (req) => {
       if (!deps.client) {

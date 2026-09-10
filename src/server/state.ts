@@ -248,6 +248,24 @@ export function submitReview(state: AppState, input: unknown): SubmitReviewResul
   return { ok: true, payload }
 }
 
+// Control-tier plan approval (LLD §5c-3): the second human approval that
+// authorizes the edit prompt (T23). Requires a submission and a plan.
+export type ApprovePlanResult = { ok: true; planApproved: boolean } | { ok: false; error: string }
+
+export function approvePlan(state: AppState): ApprovePlanResult {
+  if (state.submission === undefined) {
+    return { ok: false, error: "nothing has been submitted yet" }
+  }
+  if (state.submission.plan === undefined) {
+    return { ok: false, error: "no plan exists yet" }
+  }
+  if (state.submission.planApproved) {
+    return { ok: false, error: "the plan is already approved" }
+  }
+  state.submission.planApproved = true
+  return { ok: true, planApproved: true }
+}
+
 function describeValue(value: unknown): string {
   return typeof value === "string" ? `"${value}"` : String(value)
 }

@@ -39,6 +39,21 @@ export type AnalysisOutput = z.infer<typeof analysisOutputSchema>
 
 export const analysisJsonSchema = z.toJSONSchema(analysisOutputSchema)
 
+// Plan output (LLD §5c-2): one approach + affected files per request.
+export const planOutputSchema = z.object({
+  perRequest: z.array(
+    z.object({
+      requestId: z.string(),
+      approach: z.string(),
+      affectedFiles: z.array(z.string()),
+    }),
+  ),
+})
+
+export type PlanOutput = z.infer<typeof planOutputSchema>
+
+export const planJsonSchema = z.toJSONSchema(planOutputSchema)
+
 // LLD §5b: batches are ≤5 files or ≤400 changed lines, whichever trips first;
 // binary files are excluded entirely (binary-ish = binary or no content hunks).
 export const ANALYSIS_BATCH_FILES = 5
