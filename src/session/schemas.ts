@@ -54,6 +54,29 @@ export type PlanOutput = z.infer<typeof planOutputSchema>
 
 export const planJsonSchema = z.toJSONSchema(planOutputSchema)
 
+// Fix + status output (LLD §5c-3): one status per request, with the checks the
+// agent ran from the project's AGENTS.md commands.
+export const fixOutputSchema = z.object({
+  statuses: z.array(
+    z.object({
+      requestId: z.string(),
+      status: z.enum(["addressed", "partial", "blocked", "declined"]),
+      reason: z.string(),
+      checks: z.array(
+        z.object({
+          command: z.string(),
+          passed: z.boolean(),
+          summary: z.string(),
+        }),
+      ).optional(),
+    }),
+  ),
+})
+
+export type FixOutput = z.infer<typeof fixOutputSchema>
+
+export const fixJsonSchema = z.toJSONSchema(fixOutputSchema)
+
 // LLD §5b: batches are ≤5 files or ≤400 changed lines, whichever trips first;
 // binary files are excluded entirely (binary-ish = binary or no content hunks).
 export const ANALYSIS_BATCH_FILES = 5

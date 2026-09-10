@@ -3,6 +3,7 @@ import type { RouteHandler } from "./http.ts"
 import { sseResponse, broadcast } from "./sse.ts"
 import { addComment, acceptFinding, submitReview, askQuestion, approvePlan } from "./state.ts"
 import { runPlan } from "./plan.ts"
+import { startFixAndStatus } from "./fix.ts"
 import type { OpenCodeClient } from "../session/client.ts"
 
 export interface RouteDependencies {
@@ -64,6 +65,9 @@ export function buildHandlers(state: AppState, deps: RouteDependencies = {}): Re
     "POST /api/plan/approve": () => {
       const result = approvePlan(state)
       if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
+      // the fix run can take minutes — it proceeds in the background and the
+      // status card fills via SSE status.ready (LLD §5c-4)
+      if (deps.client) startFixAndStatus(state, deps.client)
       return Response.json({ approved: true })
     },
     "POST /api/questions": async (req) => {

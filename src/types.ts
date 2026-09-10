@@ -130,6 +130,10 @@ export interface AppState {
     planApproved?: boolean
     statuses?: RequestStatus[]
     roundPrompted?: boolean
+    // fix-flow failure modes (LLD §9): the session never went idle within the
+    // stall budget, or its final structured report never validated
+    stalled?: boolean
+    statusError?: string
   }
   // connected SSE client stream controllers (server pushes events into these)
   sseClients: Set<ReadableStreamDefaultController<Uint8Array>>

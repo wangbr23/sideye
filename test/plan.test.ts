@@ -27,6 +27,9 @@ async function stubOpencode(responses: unknown[]) {
     fetch: async (req) => {
       const path = new URL(req.url).pathname
       if (path === "/global/health") return Response.json({ healthy: true, version: "stub" })
+      if (!path.endsWith("/message") && !path.endsWith("/prompt_async")) {
+        return Response.json({ error: "unexpected path" }, { status: 404 })
+      }
       const body = (await req.json()) as { parts: { text: string }[] }
       prompts.push(body.parts.map((p) => p.text).join("\n"))
       return Response.json(responses.shift() ?? { info: {}, parts: [] })
