@@ -17,7 +17,7 @@ Task format: `- [ ] \`T<n>\` <description> — <manual|agent>[, complexity: simp
 
 ## Capture and parsing
 
-- [ ] `T9` Worktree tracked-diff capture via `git diff HEAD` (staged + unstaged vs HEAD) — agent, complexity: simple, depends-on: T1, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
+- [x] `T9` Worktree tracked-diff capture via `git diff HEAD` (staged + unstaged vs HEAD) — agent, complexity: simple, depends-on: T1, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T10` Untracked-file capture via `git status --porcelain -z` with size/count caps, truncation flags, synthetic added-file hunks — agent, complexity: simple, depends-on: T9, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T11` Unified-diff parser → DiffFile[]/Hunk[] with binary detection and rename mapping — agent, complexity: complex, depends-on: T1, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T12` Review server skeleton: Bun.serve loopback on port 0, static frontend serving, open vs reviewer-token control tiers (401 without token on control routes) — agent, complexity: complex, depends-on: T1, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
