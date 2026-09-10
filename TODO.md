@@ -41,6 +41,6 @@ Task format: `- [ ] \`T<n>\` <description> — <manual|agent>[, complexity: simp
 
 ## Surfaces and packaging
 
-- [ ] `T24` OpenCode plugin entry: register `sideye_open_review` tool + `/sideye` command template + TUI toast with reviewer URL — agent, complexity: complex, depends-on: T17, T18, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
+- [x] `T24` OpenCode plugin entry: register `sideye_open_review` tool + `/sideye` command template + TUI toast with reviewer URL — agent, complexity: complex, depends-on: T17, T18, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T25` README with install and usage for both launch paths — agent, complexity: simple, depends-on: T8, T24, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T26` Run the eight manual acceptance scenarios from the HLD verification list — manual, depends-on: T3, T5, T7, T25, design: docs/designs/2026-09-10-sideye-code-review-mvp.md

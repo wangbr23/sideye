@@ -18,6 +18,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@opencode-ai/plugin": "^1.18.30",
     "@opencode-ai/sdk": "^1.18.30",
     "zod": "^4.6.1"
   }
