@@ -13,7 +13,7 @@ Task format: `- [ ] \`T<n>\` <description> — <manual|agent>[, complexity: simp
 - [ ] `T5` Handoff UI: submit card, plan approval card, per-request status report, round-consent card — agent, complexity: complex, depends-on: T4, T21, T22, T23, T6, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T6` Round capture route (control tier): consent gating after status report, round.prompt event, prior-round comments stay viewable at anchors — agent, complexity: complex, depends-on: T13, T14, T23, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T7` Lesson capture plumbing: lesson candidates with provenance from lesson-marked comments, inclusion in submit payload, fix-prompt instruction to propose via swe_factory_propose_lesson, degradation note when the tool is absent — agent, complexity: simple, depends-on: T21, T23, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
-- [ ] `T8` `sideye review [commit]` CLI launcher: bin wiring, arg parse, connect/create OpenCode, dedicated session, launch — agent, complexity: complex, depends-on: T17, T18, T2, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
+- [x] `T8` `sideye review [commit]` CLI launcher: bin wiring, arg parse, connect/create OpenCode, dedicated session, launch — agent, complexity: complex, depends-on: T17, T18, T2, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 
 ## Capture and parsing
 

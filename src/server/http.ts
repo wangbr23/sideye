@@ -39,6 +39,9 @@ export function startReviewServer(options: ReviewServerOptions): RunningReviewSe
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
+    // SSE connections are quiet by design; Bun's 10s default idle timeout
+    // would drop them (observed as repeated reconnects). 255 is Bun's max.
+    idleTimeout: 255,
     fetch: (req) => handleRequest(req, options),
   })
   const { port } = server
