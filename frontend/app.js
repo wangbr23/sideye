@@ -309,6 +309,11 @@ document.getElementById("overall-comment").addEventListener("click", () => {
   beginComment("overall", { round: selectedRound })
 })
 
+document.getElementById("submit-review").addEventListener("click", () => {
+  activeTab = "Status"
+  render()
+})
+
 // Side panel (LLD §8): tabs for Analysis, Findings, Comments, Status. Comments
 // and Status fill in with later tasks; for now they render empty states.
 function renderPanel() {
@@ -335,10 +340,189 @@ function renderTabContent() {
     case "Comments":
       return renderCommentsTab()
     case "Status":
-      return el("p", "empty", "No submission yet.")
+      return renderStatusTab()
     default:
       return el("p", "empty", "Nothing here.")
   }
+}
+
+// Status tab: the submit → plan → approve → status → round-consent handoff
+// (LLD §8, §5c). Everything renders from the /api/state projection; actions
+// post to the token-gated control routes.
+function renderStatusTab() {
+  const submission = reviewState.submission
+  if (submission === null) return renderSubmitCard()
+  const wrap = el("div", "status-tab")
+  if (submission.plan === null && !submission.planApproved) {
+    wrap.append(el("p", "empty", "Planning… the agent is drafting a fix plan."))
+  }
+  if (submission.plan !== null) wrap.append(renderPlanCard(submission))
+  if (submission.planApproved) {
+    if (submission.statuses !== null && submission.statuses !== undefined) {
+      wrap.append(renderStatusesCard(submission))
+    }
+    if (submission.stalled) {
+      wrap.append(el("p", "degraded", "The session stopped responding (10-minute stall). The review stays usable."))
+    }
+    if (submission.statusError !== undefined && submission.statusError !== null) {
+      wrap.append(el("p", "degraded", `Status report failed: ${submission.statusError}`))
+    }
+    if (!submission.roundPrompted && (submission.statuses !== null || submission.stalled)) {
+      wrap.append(renderRoundConsentCard(submission))
+    }
+    if (submission.roundPrompted) {
+      wrap.append(el("p", "empty", "New round captured — keep reviewing above."))
+    }
+  }
+  return wrap
+}
+
+function renderSubmitCard() {
+  const card = el("div", "status-card")
+  card.append(el("h3", "section-title", "Submit requests"))
+  const accepted = reviewState.acceptedFindings
+  card.append(
+    el(
+      "p",
+      "hint",
+      accepted.length === 0
+        ? "Add explicit requests below. Accepted findings from the Findings tab join automatically."
+        : `${accepted.length} accepted finding${accepted.length === 1 ? "" : "s"} will join automatically.`,
+    ),
+  )
+  const textarea = el("textarea", "comment-input")
+  textarea.placeholder = "One request per line, e.g.\nSplit the render loop\nAdd a test for empty input"
+  const post = el("button", "post-button", "Submit to agent")
+  post.addEventListener("click", async () => {
+    const requests = textarea.value
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "")
+    post.disabled = true
+    try {
+      const res = await fetch("/api/submit", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${reviewerToken()}` },
+        body: JSON.stringify({ requests }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        card.append(el("p", "error-note", `Submit failed (${res.status}): ${body.error ?? "unknown error"}`))
+        post.disabled = false
+        return
+      }
+      await refresh()
+    } catch (err) {
+      card.append(el("p", "error-note", `Submit failed: ${String(err)}`))
+      post.disabled = false
+    }
+  })
+  card.append(textarea, post)
+  return card
+}
+
+function requestText(requestId) {
+  const submission = reviewState.submission
+  const request = submission?.payload.requests.find((r) => r.id === requestId)
+  return request?.text ?? requestId
+}
+
+function originTag(origin) {
+  return el("span", "scope-tag", origin === "accepted-finding" ? "from accepted finding" : origin)
+}
+
+function renderPlanCard(submission) {
+  const card = el("div", "status-card plan")
+  card.append(el("h3", "section-title", "Fix plan"))
+  for (const entry of submission.plan.perRequest) {
+    const row = el("div", "plan-row")
+    row.append(
+      el("p", "plan-request", [
+        originTag(submission.payload.requests.find((r) => r.id === entry.requestId)?.origin ?? "user"),
+        el("span", undefined, requestText(entry.requestId)),
+      ]),
+      el("p", "purpose", entry.approach),
+      el("p", "finding-where", entry.affectedFiles.length > 0 ? entry.affectedFiles.join(", ") : "no files listed"),
+    )
+    card.append(row)
+  }
+  const approve = el("button", "post-button", "Approve plan — authorize edits")
+  approve.addEventListener("click", async () => {
+    approve.disabled = true
+    try {
+      const res = await fetch("/api/plan/approve", {
+        method: "POST",
+        headers: { authorization: `Bearer ${reviewerToken()}` },
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        card.append(el("p", "error-note", `Approve failed (${res.status}): ${body.error ?? "unknown error"}`))
+        approve.disabled = false
+        return
+      }
+      await refresh()
+    } catch (err) {
+      card.append(el("p", "error-note", `Approve failed: ${String(err)}`))
+      approve.disabled = false
+    }
+  })
+  card.append(approve)
+  return card
+}
+
+function renderStatusesCard(submission) {
+  const card = el("div", "status-card")
+  card.append(el("h3", "section-title", "Status report"))
+  for (const status of submission.statuses) {
+    const row = el("div", "plan-row")
+    row.append(
+      el("p", "plan-request", [
+        statusBadge(status.status),
+        el("span", undefined, requestText(status.requestId)),
+      ]),
+      el("p", "purpose", status.reason),
+    )
+    for (const check of status.checks ?? []) {
+      row.append(el("p", "check-row", `${check.passed ? "✓" : "✗"} ${check.command} — ${check.summary}`))
+    }
+    card.append(row)
+  }
+  return card
+}
+
+function statusBadge(status) {
+  return el("span", `badge status-${status}`, status)
+}
+
+function renderRoundConsentCard(submission) {
+  const card = el("div", "status-card consent")
+  const nextRound = reviewState.rounds.length + 1
+  card.append(
+    el("h3", "section-title", `Capture round ${nextRound}?`),
+    el("p", "hint", "Snapshots the current worktree diff as a new round for fresh analysis and comments."),
+  )
+  const capture = el("button", "post-button", `Capture round ${nextRound}`)
+  capture.addEventListener("click", async () => {
+    capture.disabled = true
+    try {
+      const res = await fetch("/api/rounds", {
+        method: "POST",
+        headers: { authorization: `Bearer ${reviewerToken()}` },
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        card.append(el("p", "error-note", `Capture failed (${res.status}): ${body.error ?? "unknown error"}`))
+        capture.disabled = false
+        return
+      }
+      await refresh()
+    } catch (err) {
+      card.append(el("p", "error-note", `Capture failed: ${String(err)}`))
+      capture.disabled = false
+    }
+  })
+  card.append(capture)
+  return card
 }
 
 // Comments tab: the overall-scope draft (opened from the header), the Q&A ask
