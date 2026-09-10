@@ -181,3 +181,7 @@ Plugin tests drive the REAL tool path: plugin input → hooks → execute agains
 ## 2026-09-10 — T25 done: README
 
 README covers: requirements (Bun + OpenCode + git), install (clone + bun install), both launch paths — CLI (`bun src/cli.ts review [sha] [--repo path]`, reviewer URL + process-lifetime note) and plugin (command template copy + npm registration when published / local symlink of src/index.ts into .opencode/plugins/, with the realpath-resolution note) — the review loop in four bullets, the experimental open agent API (state/events/comments/questions, attribution over auth, untrusted-attributed-data caveat), control-token note, and the stated limitations (process-local lifetime + lockfile trust model per §11.1, one submit/fix/consent cycle, honor-system author labels). Docs-only change; suite 109 pass, typecheck clean.
+
+## 2026-09-10 — work loop session: T15–T25 done, stopping at T26 (manual)
+
+Loop order this session: T15, T16, T17, T18, T19, T21, T16-adjacent frontend T3, T20, T22, T23, T6, T4, T5, T7, T24, T25 (frontier recomputed every round; T17/T18/T19/T21/T22/T24 became unblocked as dependencies landed). All agent tasks in TODO.md are now [x]; the only remaining task is T26 — the eight HLD manual acceptance scenarios (plus security spot-checks), which need a human with a real model and TUI and stay unchecked here. Final state: suite 109 pass across 16 files, typecheck clean, working tree clean except the user's own untracked .opencode/ command file (never committed).
