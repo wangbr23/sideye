@@ -35,6 +35,7 @@
 
 - **Three comment scopes:** inline (line/hunk), file, and overall.
 - **Immediate Q&A, batched edits.** Explanation questions are answered in the UI in real time (routed through the session); change requests accumulate until Submit.
+- **Local agents can review too.** Other local agents may read any open review and leave comments through its API; comments require an author label and are treated as untrusted data in prompts. Control actions — submit, plan approval, new rounds — remain human-only.
 - **Submit sends explicit work only.** User-authored requests plus AI findings the user explicitly accepted. Never all comments, never auto-fix-everything.
 - **Plan-then-approve.** Submit returns a plan; a second confirmation authorizes edits. Submit alone is not edit authorization.
 - **Per-request resolution status.** After editing, each request is reported as addressed / partially addressed / blocked / declined with a brief reason — a bare diff is not enough.
