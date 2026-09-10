@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { buildHandlers } from "./server/routes.ts"
 import { generateReviewerToken, startReviewServer, type RunningReviewServer } from "./server/http.ts"
 import { captureRound, createState } from "./server/state.ts"
+import type { OpenCodeClient } from "./session/client.ts"
 import type { ReviewTarget } from "./types.ts"
 
 // Shared launcher (LLD §4, §5a): one active review per repo per process, one
@@ -16,6 +17,9 @@ export interface LaunchOptions {
   repoPath: string
   sessionID: string
   target: ReviewTarget
+  // linked OpenCode session client — the Q&A route needs it; analysis (T19)
+  // callers hold their own reference. Optional until T8/T24 wire their flows.
+  client?: OpenCodeClient
   openBrowser?: boolean // default true — best-effort, failure never blocks the launch
 }
 
@@ -57,7 +61,7 @@ export async function launchReview(options: LaunchOptions): Promise<LaunchResult
     repoPath: options.repoPath,
     token,
     staticDir: join(import.meta.dir, "..", "frontend"),
-    handlers: buildHandlers(state),
+    handlers: buildHandlers(state, { client: options.client }),
   })
   const url = reviewerUrl(server.port, token)
   const lock: Lockfile = {

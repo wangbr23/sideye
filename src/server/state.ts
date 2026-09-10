@@ -6,6 +6,7 @@ import {
   type CapturedTrackedDiff,
 } from "../git/capture.ts"
 import { parseDiff } from "../git/parse.ts"
+import { questionPrompt, renderAnchorContext } from "../session/prompts.ts"
 
 export interface AppStateInit {
   token: string
@@ -249,4 +250,101 @@ export function submitReview(state: AppState, input: unknown): SubmitReviewResul
 
 function describeValue(value: unknown): string {
   return typeof value === "string" ? `"${value}"` : String(value)
+}
+
+// Open-tier Q&A (LLD §4, §5c-6): validates the question and optional anchor,
+// resolves the anchor's diff context for the prompt. No state mutation —
+// questions are transient; the answer travels via HTTP response + SSE only.
+export type AskQuestionResult =
+  | { ok: true; question: string; prompt: string }
+  | { ok: false; error: string }
+
+export function askQuestion(state: AppState, input: unknown): AskQuestionResult {
+  if (typeof input !== "object" || input === null) {
+    return { ok: false, error: "request body must be a JSON object" }
+  }
+  const draft = input as Record<string, unknown>
+  const author = draft.author
+  if (typeof author !== "string" || author.trim() === "") {
+    return { ok: false, error: "author is required and must be a non-empty string" }
+  }
+  const question = draft.question
+  if (typeof question !== "string" || question.trim() === "") {
+    return { ok: false, error: "question is required and must be a non-empty string" }
+  }
+
+  let anchorContext: string | undefined
+  if (draft.anchor !== undefined) {
+    const resolved = resolveAnchor(state, draft.anchor)
+    if (!resolved.ok) return { ok: false, error: resolved.error }
+    anchorContext = renderAnchorContext(resolved.anchor, resolved.files)
+  }
+  return { ok: true, question, prompt: questionPrompt({ author, question, anchorContext }) }
+}
+
+function resolveAnchor(
+  state: AppState,
+  anchor: unknown,
+): { ok: true; files: DiffFile[]; anchor: NonNullable<Comment["anchor"]> } | { ok: false; error: string } {
+  if (typeof anchor !== "object" || anchor === null) {
+    return { ok: false, error: "anchor must be an object" }
+  }
+  const fields = anchor as Record<string, unknown>
+  const round = fields.round
+  if (typeof round !== "number" || !Number.isInteger(round)) {
+    return { ok: false, error: "anchor.round must be an integer" }
+  }
+  const roundData = state.rounds.find((r) => r.n === round)
+  if (roundData === undefined) {
+    return { ok: false, error: `anchor.round ${round} does not exist` }
+  }
+  const { file, hunkIndex, lineRange } = fields
+  if (file === undefined && hunkIndex !== undefined) {
+    return { ok: false, error: "anchor.hunkIndex requires anchor.file" }
+  }
+  let resolvedFile: string | undefined
+  if (file !== undefined) {
+    if (typeof file !== "string" || !roundData.files.some((f) => f.path === file)) {
+      return { ok: false, error: `anchor.file ${describeValue(file)} does not exist in round ${round}` }
+    }
+    resolvedFile = file
+  }
+  if (hunkIndex !== undefined) {
+    if (typeof hunkIndex !== "number" || !Number.isInteger(hunkIndex) || hunkIndex < 0) {
+      return { ok: false, error: "anchor.hunkIndex must be a non-negative integer" }
+    }
+    const hunk = roundData.files.find((f) => f.path === resolvedFile)?.hunks[hunkIndex]
+    if (hunk === undefined) {
+      return { ok: false, error: `anchor.hunkIndex ${hunkIndex} does not exist in ${resolvedFile} of round ${round}` }
+    }
+  }
+  if (lineRange !== undefined) {
+    if (hunkIndex === undefined) {
+      return { ok: false, error: "anchor.lineRange requires anchor.hunkIndex" }
+    }
+    const hunk = roundData.files.find((f) => f.path === resolvedFile)?.hunks[hunkIndex]
+    if (
+      !Array.isArray(lineRange) ||
+      lineRange.length !== 2 ||
+      !lineRange.every((n) => typeof n === "number" && Number.isInteger(n)) ||
+      hunk === undefined
+    ) {
+      return { ok: false, error: "anchor.lineRange must be a [start, end] pair of integers" }
+    }
+    const [start, end] = lineRange
+    const lastNewLine = hunk.newStart + hunk.newLines - 1
+    if (start === undefined || end === undefined || start > end || start < hunk.newStart || end > lastNewLine) {
+      return { ok: false, error: `anchor.lineRange must fall within the hunk's new-side lines ${hunk.newStart}..${lastNewLine}` }
+    }
+  }
+  return {
+    ok: true,
+    files: roundData.files,
+    anchor: {
+      round,
+      ...(resolvedFile !== undefined ? { file: resolvedFile } : {}),
+      ...(hunkIndex !== undefined ? { hunkIndex } : {}),
+      ...(lineRange !== undefined ? { lineRange: lineRange as [number, number] } : {}),
+    },
+  }
 }

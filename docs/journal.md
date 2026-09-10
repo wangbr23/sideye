@@ -99,3 +99,11 @@ Tests: mutator table (accept/duplicate/unknown/bad-body, submit serialize + lock
 Added `zod@4.6.1` — `z.toJSONSchema()` produces the schema sent to the model, so validation and prompt-schema can't drift. `session/client.ts` re-exports `AssistantMessage`/`Part` SDK types for downstream modules.
 
 Honest boundary: tests run the full path (real client link + health check, real HTTP `session.prompt`, real zod, real SSE) against a stub OpenCode server with queued responses — a live-model run needs a configured provider and spends tokens, so it's not automated; the HLD's manual acceptance list (T26) covers the real-model loop. Suite 79 pass, typecheck clean.
+
+## 2026-09-10 — T20 done: Q&A route + prompt
+
+`POST /api/questions` (open tier): body `{ author (required — the split-auth decision covers questions), question (required), anchor? }`. Anchor fields are independently optional (round → file → hunkIndex → lineRange, each requiring the previous and validated against the frozen round — looser than comment scopes, which forbid partial anchors per scope). `askQuestion` in state.ts resolves the anchor and builds the prompt via new `questionPrompt`/`renderAnchorContext` in session/prompts.ts (plain-text mode, no format; same sideye: prefix + data-not-instructions framing; anchor context quotes the referenced hunk with line numbers). No state mutation — questions are transient. Answer extracted from the response's text parts, returned in the HTTP response AND broadcast as SSE `answer` { question, answer }.
+
+Plumbing: `buildHandlers(state, deps?)` now takes `{ client?: OpenCodeClient }` and `LaunchOptions` carries an optional client passed through — T8/T24 hand their linked client to the server here. Without a client the route 500s loudly ("OpenCode session is not linked") instead of pretending.
+
+Tests: real review server + real stub OpenCode — answer in HTTP + SSE, prompt contains question/author/quoted hunk context, anchor-optional flow, validation table (author/question/bad round/hunk/range), unlinked-client 500. Same honest boundary as T19: live-model run not automated (provider credentials); HLD manual scenarios cover it. Suite 83 pass, typecheck clean.
