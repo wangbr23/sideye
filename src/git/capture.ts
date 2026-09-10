@@ -21,6 +21,32 @@ export const UNTRACKED_MAX_FILES = 50
 
 const BINARY_SNIFF_BYTES = 8 * 1024
 
+// Commit-target capture (LLD §6): diff vs first parent. Merge commits are
+// rejected at launch — merge comparisons are out of scope for the MVP. A root
+// commit has no parent, so it uses `git diff-tree --root` instead.
+export async function captureCommitDiff(repoPath: string, sha: string): Promise<CapturedTrackedDiff> {
+  const parents = (await $`git show -s --format=%P ${sha}`.cwd(repoPath).quiet())
+    .text()
+    .trim()
+  const parentList = parents === "" ? [] : parents.split(/\s+/)
+
+  if (parentList.length > 1) {
+    throw new Error(
+      `${sha} is a merge commit (${parentList.length} parents) — Sideye does not review merges; review a non-merge commit or the worktree instead`,
+    )
+  }
+  if (parentList.length === 0) {
+    const diff = await $`git diff-tree --root -r -p --format= ${sha}`.cwd(repoPath).quiet()
+    const numstat = await $`git diff-tree --root -r --numstat --format= ${sha}`
+      .cwd(repoPath)
+      .quiet()
+    return { diffText: diff.text(), numstatText: numstat.text() }
+  }
+  const diff = await $`git diff ${parentList[0]} ${sha}`.cwd(repoPath).quiet()
+  const numstat = await $`git diff ${parentList[0]} ${sha} --numstat`.cwd(repoPath).quiet()
+  return { diffText: diff.text(), numstatText: numstat.text() }
+}
+
 // Untracked-file capture for the worktree target (LLD §6): `??` entries from
 // `git status --porcelain=v1 -z -uall` (respects .gitignore), each embedded as a
 // synthetic added-file hunk. Caps: over 100 KiB per file → `truncated`, content

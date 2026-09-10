@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  captureCommitDiff,
   captureTrackedDiff,
   captureUntrackedFiles,
   UNTRACKED_MAX_BYTES_PER_FILE,
@@ -161,5 +162,47 @@ describe("captureUntrackedFiles", () => {
   test("no untracked files yields empty list", async () => {
     const files = await captureUntrackedFiles(repoDir)
     expect(files).toEqual([])
+  })
+})
+
+describe("captureCommitDiff", () => {
+  test("non-root commit diffs vs first parent", async () => {
+    writeFileSync(join(repoDir, "a.txt"), "one\ntwo\n")
+    await git("add", "a.txt")
+    await git("commit", "-m", "second")
+    const sha = (await $`git rev-parse HEAD`.cwd(repoDir).quiet()).text().trim()
+
+    const captured = await captureCommitDiff(repoDir, sha)
+    expect(captured.diffText).toContain("+two")
+    expect(captured.numstatText).toContain("a.txt")
+  })
+
+  test("root commit captures its initial content", async () => {
+    const sha = (await $`git rev-list --max-parents=0 HEAD`.cwd(repoDir).quiet())
+      .text()
+      .trim()
+    const captured = await captureCommitDiff(repoDir, sha)
+    expect(captured.diffText).toContain("+one")
+    expect(captured.diffText).toContain("diff --git a/a.txt b/a.txt")
+    expect(captured.numstatText).toContain("a.txt")
+  })
+
+  test("merge commit is rejected with a clear message", async () => {
+    await git("checkout", "-b", "feature")
+    writeFileSync(join(repoDir, "feat.txt"), "feat\n")
+    await git("add", "feat.txt")
+    await git("commit", "-m", "feature")
+    await git("checkout", "main")
+    writeFileSync(join(repoDir, "main.txt"), "main\n")
+    await git("add", "main.txt")
+    await git("commit", "-m", "main work")
+    await git("merge", "feature", "-m", "merge")
+    const mergeSha = (await $`git rev-parse HEAD`.cwd(repoDir).quiet()).text().trim()
+
+    expect(captureCommitDiff(repoDir, mergeSha)).rejects.toThrow(/merge/)
+  })
+
+  test("invalid sha throws", async () => {
+    expect(captureCommitDiff(repoDir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")).rejects.toThrow()
   })
 })
