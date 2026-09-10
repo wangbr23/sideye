@@ -1,7 +1,7 @@
 import type { AppState } from "../types.ts"
 import type { RouteHandler } from "./http.ts"
 import { sseResponse } from "./sse.ts"
-import { addComment } from "./state.ts"
+import { addComment, acceptFinding, submitReview } from "./state.ts"
 
 // Open-tier state projection (LLD §4): everything the frontend and local agents
 // may read. The reviewer token and the SSE client set are deliberately excluded
@@ -14,6 +14,7 @@ export function projectState(state: AppState): unknown {
     rounds: state.rounds,
     comments: state.comments,
     analysis: Object.fromEntries(state.analysis),
+    acceptedFindings: state.acceptedFindings,
     submission: state.submission ?? null,
   }
 }
@@ -23,15 +24,29 @@ export function buildHandlers(state: AppState): Record<string, RouteHandler> {
     "GET /api/state": () => Response.json(projectState(state)),
     "GET /api/events": () => sseResponse(state),
     "POST /api/comments": async (req) => {
-      let input: unknown
-      try {
-        input = await req.json()
-      } catch {
-        return Response.json({ error: "request body must be valid JSON" }, { status: 400 })
-      }
-      const result = addComment(state, input)
+      const result = addComment(state, await parseJson(req))
       if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
       return Response.json(result.comment)
     },
+    "POST /api/findings/accept": async (req) => {
+      const input = await parseJson(req)
+      const result = acceptFinding(state, input)
+      if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
+      return Response.json(result.accepted)
+    },
+    "POST /api/submit": async (req) => {
+      const input = await parseJson(req)
+      const result = submitReview(state, input)
+      if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
+      return Response.json(result.payload)
+    },
+  }
+}
+
+async function parseJson(req: Request): Promise<unknown> {
+  try {
+    return await req.json()
+  } catch {
+    return undefined // mutators reject non-objects with a 400 and a specific error
   }
 }

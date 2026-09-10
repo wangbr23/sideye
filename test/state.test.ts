@@ -3,7 +3,7 @@ import { $ } from "bun"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createState, captureRound, addComment } from "../src/server/state.ts"
+import { createState, captureRound, addComment, acceptFinding, submitReview } from "../src/server/state.ts"
 import type { ReviewTarget } from "../src/types.ts"
 
 let repoDir: string
@@ -247,5 +247,72 @@ describe("addComment", () => {
     })
     if (!overallResult.ok) throw new Error(`expected ok, got: ${overallResult.error}`)
     expect(overallResult.comment.anchor).toEqual({ round: 1 })
+  })
+})
+
+describe("acceptFinding and submitReview", () => {
+  const finding = { id: "f1", file: "a.txt", claim: "off-by-one in the loop", citations: [] }
+
+  function stateWithAnalysis() {
+    const state = createState({ token: "tok", sessionID: "ses_1", repoPath: repoDir, target: worktree })
+    state.analysis.set(1, { files: [], hunks: [], findings: [finding] })
+    return state
+  }
+
+  test("accepting a real finding records it, duplicates and unknowns rejected", () => {
+    const state = stateWithAnalysis()
+    const result = acceptFinding(state, { round: 1, findingId: "f1" })
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}`)
+    expect(result.accepted).toEqual([{ round: 1, findingId: "f1" }])
+
+    expect(acceptFinding(state, { round: 1, findingId: "f1" }).ok).toBe(false)
+    expect(acceptFinding(state, { round: 1, findingId: "nope" }).ok).toBe(false)
+    expect(acceptFinding(state, { round: 2, findingId: "f1" }).ok).toBe(false)
+    expect(acceptFinding(state, { findingId: "f1" }).ok).toBe(false)
+    expect(acceptFinding(state, "not an object").ok).toBe(false)
+    expect(state.acceptedFindings).toEqual([{ round: 1, findingId: "f1" }])
+  })
+
+  test("submit serializes user requests and accepted findings, then locks", async () => {
+    const state = stateWithAnalysis()
+    acceptFinding(state, { round: 1, findingId: "f1" })
+
+    const result = submitReview(state, { requests: ["split the loop", "add a test"] })
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}`)
+    expect(result.payload.requests).toHaveLength(3)
+    const [first, second, third] = result.payload.requests
+    expect(first).toMatchObject({ text: "split the loop", origin: "user" })
+    expect(second).toMatchObject({ text: "add a test", origin: "user" })
+    expect(third).toMatchObject({ text: "off-by-one in the loop", origin: "accepted-finding" })
+    expect(first?.id).toBeTruthy()
+    expect(first?.id).not.toBe(second?.id)
+    expect(result.payload.lessons).toEqual([])
+    expect(state.submission?.payload).toEqual(result.payload)
+
+    const again = submitReview(state, { requests: [] })
+    expect(again.ok).toBe(false)
+    if (!again.ok) expect(again.error).toMatch(/already exists/)
+  })
+
+  test("submit rejects malformed requests and body shapes", () => {
+    const state = stateWithAnalysis()
+    for (const input of [
+      "not an object",
+      { requests: "one" },
+      { requests: [42] },
+      { requests: ["ok", "   "] },
+    ]) {
+      expect(submitReview(state, input).ok).toBe(false)
+    }
+    expect(state.submission).toBeUndefined()
+  })
+
+  test("submit without accepted findings and without requests yields an empty payload", async () => {
+    const state = stateWithAnalysis()
+    await captureRound(state) // analysis references round 1 which now exists
+    const result = submitReview(state, {})
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}`)
+    expect(result.payload).toEqual({ requests: [], lessons: [] })
+    expect(state.submission?.payload).toEqual(result.payload)
   })
 })

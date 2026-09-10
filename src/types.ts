@@ -120,6 +120,7 @@ export interface AppState {
   rounds: Round[]
   comments: Comment[]
   analysis: Map<number, AnalysisResult> // by round
+  acceptedFindings: { round: number; findingId: string }[] // marked pre-submit, serialized on submit
   submission?: {
     payload: SubmitPayload
     plan?: Plan

@@ -27,7 +27,7 @@ afterEach(() => {
 function startServer(state: ReturnType<typeof createState>) {
   return startReviewServer({
     repoPath: repoDir,
-    token: generateReviewerToken(),
+    token: state.token,
     staticDir: mkdtempSync(join(tmpdir(), "sideye-routes-static-")),
     handlers: buildHandlers(state),
   })
@@ -74,6 +74,89 @@ describe("GET /api/state", () => {
     const projected = JSON.stringify(projectState(state))
     expect(projected).not.toContain(state.token)
     expect(projected).not.toContain("sseClients")
+  })
+})
+
+describe("control-tier routes (findings/accept, submit)", () => {
+  function stateWithAnalysis() {
+    const state = createState({
+      token: generateReviewerToken(),
+      sessionID: "ses_1",
+      repoPath: repoDir,
+      target: { kind: "worktree" },
+    })
+    state.analysis.set(1, {
+      files: [],
+      hunks: [],
+      findings: [{ id: "f1", file: "a.txt", claim: "off-by-one in the loop", citations: [] }],
+    })
+    return state
+  }
+
+  test("token-guarded: accept and submit serialize into the payload and state", async () => {
+    const state = stateWithAnalysis()
+    const server = startServer(state)
+    const token = state.token
+    const auth = { authorization: `Bearer ${token}`, "content-type": "application/json" }
+    try {
+      const accept = await fetch(`${base(server)}/api/findings/accept`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ round: 1, findingId: "f1" }),
+      })
+      expect(accept.status).toBe(200)
+      expect(await accept.json()).toEqual([{ round: 1, findingId: "f1" }])
+
+      const submit = await fetch(`${base(server)}/api/submit`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ requests: ["split the loop"] }),
+      })
+      expect(submit.status).toBe(200)
+      const payload = (await submit.json()) as {
+        requests: { id: string; text: string; origin: string }[]
+        lessons: unknown[]
+      }
+      expect(payload.requests).toHaveLength(2)
+      expect(payload.requests[1]).toEqual({
+        id: expect.any(String),
+        text: "off-by-one in the loop",
+        origin: "accepted-finding",
+      })
+
+      const projected = (await (await fetch(`${base(server)}/api/state`)).json()) as {
+        acceptedFindings: unknown[]
+        submission: { payload: unknown } | null
+      }
+      expect(projected.acceptedFindings).toEqual([{ round: 1, findingId: "f1" }])
+      expect(projected.submission?.payload).toEqual(payload)
+    } finally {
+      server.stop()
+    }
+  })
+
+  test("control-tier validation errors return 400 through the real server", async () => {
+    const state = stateWithAnalysis()
+    const server = startServer(state)
+    const auth = { authorization: `Bearer ${state.token}`, "content-type": "application/json" }
+    try {
+      const accept = await fetch(`${base(server)}/api/findings/accept`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ round: 1, findingId: "ghost" }),
+      })
+      expect(accept.status).toBe(400)
+      expect(((await accept.json()) as { error: string }).error).toMatch(/does not exist/)
+
+      const submit = await fetch(`${base(server)}/api/submit`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ requests: [42] }),
+      })
+      expect(submit.status).toBe(400)
+    } finally {
+      server.stop()
+    }
   })
 })
 
