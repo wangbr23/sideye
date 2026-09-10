@@ -5,9 +5,11 @@
 
 const SSE_EVENTS = ["analysis.update", "answer", "plan.ready", "status.ready", "round.prompt"]
 const BANNER_AFTER_FAILURES = 3
+const PANEL_TABS = ["Analysis", "Findings", "Comments", "Status"]
 
 let reviewState = null // latest /api/state projection
 let selectedRound = null // null → latest round
+let activeTab = "Analysis"
 let reconnectFailures = 0
 
 const hunkObserver = new IntersectionObserver(
@@ -37,6 +39,7 @@ function render() {
   renderTargetLabel()
   renderRoundSelector()
   renderDiff()
+  renderPanel()
 }
 
 function renderTargetLabel() {
@@ -147,17 +150,171 @@ function setBanner(visible) {
   document.getElementById("reconnect-banner").classList.toggle("hidden", !visible)
 }
 
-function el(tag, className, text) {
+function el(tag, className, content) {
   const node = document.createElement(tag)
   if (className) node.className = className
-  if (text !== undefined) node.textContent = text
+  if (content !== undefined) {
+    if (Array.isArray(content)) node.append(...content)
+    else node.textContent = content
+  }
   return node
 }
 
 document.getElementById("round-select").addEventListener("change", (event) => {
   selectedRound = Number(event.target.value)
-  renderDiff()
+  render()
 })
+
+// Side panel (LLD §8): tabs for Analysis, Findings, Comments, Status. Comments
+// and Status fill in with later tasks; for now they render empty states.
+function renderPanel() {
+  document.getElementById("panel-tabs").replaceChildren(
+    ...PANEL_TABS.map((tab) => {
+      const button = el("button", `tab${tab === activeTab ? " active" : ""}`, tab)
+      button.addEventListener("click", () => {
+        activeTab = tab
+        renderPanel()
+      })
+      return button
+    }),
+  )
+  document.getElementById("panel-content").replaceChildren(renderTabContent())
+}
+
+function renderTabContent() {
+  const analysis = selectedRound === null ? null : reviewState.analysis[String(selectedRound)]
+  switch (activeTab) {
+    case "Analysis":
+      return renderAnalysisTab(analysis)
+    case "Findings":
+      return renderFindingsTab(analysis)
+    case "Comments":
+      return el("p", "empty", "No comments yet.")
+    case "Status":
+      return el("p", "empty", "No submission yet.")
+    default:
+      return el("p", "empty", "Nothing here.")
+  }
+}
+
+function renderAnalysisTab(analysis) {
+  if (!analysis) return el("p", "empty", "No analysis yet for this round.")
+  const wrap = el("div", "analysis")
+  if (analysis.unparsed) {
+    const pane = el("section", "unparsed")
+    pane.append(el("h3", "section-title", "Unparsed analysis"), el("pre", "raw", analysis.unparsed))
+    wrap.append(pane)
+  }
+  if (analysis.files.length > 0) {
+    const section = el("section")
+    section.append(el("h3", "section-title", "Files"))
+    for (const file of analysis.files) {
+      const card = el("div", "analysis-card")
+      card.append(
+        el("div", "analysis-head", [
+          el("span", "path", file.file),
+          confidenceBadge(file.confidence),
+        ]),
+        el("p", "purpose", file.purpose),
+      )
+      card.append(citations(file.citations))
+      section.append(card)
+    }
+    wrap.append(section)
+  }
+  if (analysis.hunks.length > 0) {
+    const section = el("section")
+    section.append(el("h3", "section-title", "Hunks"))
+    for (const hunk of analysis.hunks) {
+      const card = el("div", "analysis-card")
+      card.append(
+        el("div", "analysis-head", [
+          el("span", "path", `${hunk.file} · hunk ${hunk.hunkIndex}`),
+          confidenceBadge(hunk.confidence),
+        ]),
+        el("p", "purpose", hunk.rationale),
+      )
+      card.append(citations(hunk.citations))
+      section.append(card)
+    }
+    wrap.append(section)
+  }
+  return wrap
+}
+
+// Findings are the visually distinct section (LLD §8): each carries an
+// accept-as-request control that posts to the token-gated accept route.
+function renderFindingsTab(analysis) {
+  if (!analysis) return el("p", "empty", "No analysis yet for this round.")
+  if (analysis.findings.length === 0) return el("p", "empty", "No findings for this round.")
+  const wrap = el("div", "findings")
+  for (const finding of analysis.findings) {
+    const accepted = reviewState.acceptedFindings.some(
+      (a) => a.round === selectedRound && a.findingId === finding.id,
+    )
+    const card = el("div", `finding-card${accepted ? " accepted" : ""}`)
+    const head = el("div", "analysis-head", [
+      el("span", "finding-id", finding.id),
+      accepted ? el("span", "badge accepted-badge", "accepted") : el("span", "badge note", "finding"),
+    ])
+    card.append(head, el("p", "purpose", finding.claim))
+    card.append(citations(finding.citations))
+    const where = [finding.file, finding.hunkIndex !== undefined ? `hunk ${finding.hunkIndex}` : null]
+      .filter(Boolean)
+      .join(" · ")
+    if (where) card.append(el("p", "finding-where", where))
+
+    if (!accepted) {
+      const accept = el("button", "accept-button", "Accept as request")
+      accept.addEventListener("click", () => acceptFinding(finding.id, card))
+      card.append(accept)
+    }
+    wrap.append(card)
+  }
+  return wrap
+}
+
+async function acceptFinding(findingId, card) {
+  try {
+    const res = await fetch("/api/findings/accept", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${reviewerToken()}`,
+      },
+      body: JSON.stringify({ round: selectedRound, findingId }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      showPanelNote(card, `Accept failed (${res.status}): ${body.error ?? "unknown error"}`)
+      return
+    }
+    await refresh()
+  } catch (err) {
+    showPanelNote(card, `Accept failed: ${String(err)}`)
+  }
+}
+
+function showPanelNote(card, message) {
+  card.append(el("p", "error-note", message))
+}
+
+function reviewerToken() {
+  return new URLSearchParams(window.location.search).get("reviewer") ?? ""
+}
+
+function confidenceBadge(confidence) {
+  return el("span", `confidence ${confidence === "evidence" ? "evidence" : "inference"}`, confidence)
+}
+
+function citations(list) {
+  const wrap = el("div", "citations")
+  if (list.length === 0) return wrap
+  for (const citation of list) {
+    wrap.append(el("span", "citation", `"${citation.quote}" — ${citation.source}`))
+  }
+  return wrap
+}
 
 refresh()
 connectEvents()

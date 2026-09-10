@@ -78,6 +78,155 @@ main {
   min-height: 200px;
 }
 
+#panel-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #ddd;
+  margin: -12px -12px 12px;
+  padding: 0 8px;
+}
+
+#panel-tabs .tab {
+  border: none;
+  background: none;
+  padding: 10px 10px 8px;
+  font-size: 14px;
+  color: #57606a;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+#panel-tabs .tab.active {
+  color: #1f2430;
+  font-weight: 600;
+  border-bottom-color: #0969da;
+}
+
+.section-title {
+  margin: 8px 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #57606a;
+}
+
+.analysis-card,
+.finding-card {
+  border: 1px solid #e4e7eb;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.analysis-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.purpose {
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+.confidence {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  color: #fff;
+}
+
+.confidence.evidence {
+  background: #1a7f37;
+}
+
+.confidence.inference {
+  background: #9e6a03;
+}
+
+.citations {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.citation {
+  font-size: 12px;
+  color: #57606a;
+  background: #f6f7f9;
+  border-left: 3px solid #d0d7de;
+  padding: 3px 6px;
+  border-radius: 0 4px 4px 0;
+}
+
+.findings .finding-card {
+  border-left: 3px solid #cf222e;
+  background: #fff8f7;
+}
+
+.finding-card.accepted {
+  border-left-color: #1a7f37;
+  background: #f4fbf5;
+}
+
+.finding-id {
+  color: #cf222e;
+}
+
+.finding-card.accepted .finding-id {
+  color: #1a7f37;
+}
+
+.accepted-badge {
+  background: #1a7f37;
+}
+
+.finding-where {
+  margin: 4px 0;
+  font-size: 12px;
+  color: #57606a;
+  font-family: ui-monospace, monospace;
+}
+
+.accept-button {
+  border: 1px solid #1f2430;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.accept-button:hover {
+  background: #1f2430;
+  color: #fff;
+}
+
+.error-note {
+  color: #b3261e;
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+
+.unparsed {
+  border: 1px solid #9e6a03;
+  background: #fff8e6;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
+
+.unparsed .raw {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
 .file {
   margin-bottom: 16px;
 }
