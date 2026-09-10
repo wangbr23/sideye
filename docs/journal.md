@@ -177,3 +177,7 @@ Tests: provenance completeness, truncation, payload inclusion (lessons ≠ all c
 Shipped `command/sideye.md` — the `/sideye [commit]` markdown command template (commands are markdown files, not program code — HLD platform contract) instructing the agent to call the tool; users copy it into their project's `.opencode/command/` (README covers install, T25).
 
 Plugin tests drive the REAL tool path: plugin input → hooks → execute against a stub OpenCode (health + /tui/show-toast) with a real git repo — URL returned, toast fired, state bound to the tool context's sessionID, second call reuses via lockfile, unhealthy OpenCode → loud failure with no lockfile written. Suite 109 pass, typecheck clean.
+
+## 2026-09-10 — T25 done: README
+
+README covers: requirements (Bun + OpenCode + git), install (clone + bun install), both launch paths — CLI (`bun src/cli.ts review [sha] [--repo path]`, reviewer URL + process-lifetime note) and plugin (command template copy + npm registration when published / local symlink of src/index.ts into .opencode/plugins/, with the realpath-resolution note) — the review loop in four bullets, the experimental open agent API (state/events/comments/questions, attribution over auth, untrusted-attributed-data caveat), control-token note, and the stated limitations (process-local lifetime + lockfile trust model per §11.1, one submit/fix/consent cycle, honor-system author labels). Docs-only change; suite 109 pass, typecheck clean.
