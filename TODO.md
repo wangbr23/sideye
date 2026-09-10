@@ -32,7 +32,7 @@ Task format: `- [ ] \`T<n>\` <description> — <manual|agent>[, complexity: simp
 
 ## Session integration
 
-- [ ] `T18` OpenCode session client link with loud startup health check — agent, complexity: simple, depends-on: T1, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
+- [x] `T18` OpenCode session client link with loud startup health check — agent, complexity: simple, depends-on: T1, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T19` Analysis pipeline: batched prompts through the originating session, zod schemas for structured output, retry + plain-text fallback, merge to AnalysisResult, analysis.update SSE — agent, complexity: complex, depends-on: T14, T18, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T20` Q&A route + prompt: blocking session prompt with anchor context, answer in HTTP response and via SSE — agent, complexity: simple, depends-on: T15, T19, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [ ] `T21` Findings-accept and submit routes (control tier): accepted findings plus explicit requests serialize into SubmitPayload — agent, complexity: simple, depends-on: T15, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
