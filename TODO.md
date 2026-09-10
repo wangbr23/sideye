@@ -28,7 +28,7 @@ Task format: `- [ ] \`T<n>\` <description> — <manual|agent>[, complexity: simp
 - [x] `T14` State projection route (`/api/state`) + SSE events channel (`/api/events`) — agent, complexity: simple, depends-on: T12, T13, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [x] `T15` Comments route (open tier): required author attribution, scope/anchor validation, 400 on missing author — agent, complexity: simple, depends-on: T14, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 - [x] `T16` Read-only diff frontend: page shell, hunk rendering from server JSON, round selector, SSE subscribe with reconnect refetch — agent, complexity: complex, depends-on: T14, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
-- [ ] `T17` Launch orchestration: lockfile single-review-per-repo reuse (pid + health check), server start, reviewer URL build, best-effort browser open — agent, complexity: complex, depends-on: T12, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
+- [x] `T17` Launch orchestration: lockfile single-review-per-repo reuse (pid + health check), server start, reviewer URL build, best-effort browser open — agent, complexity: complex, depends-on: T12, design: docs/designs/2026-09-10-sideye-code-review-mvp-lld.md
 
 ## Session integration
 
