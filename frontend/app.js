@@ -1,0 +1,1 @@
+// Placeholder — SSE + render logic lands in T16.

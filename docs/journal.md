@@ -37,3 +37,7 @@ Committed the planning docs left uncommitted by prior sessions first, then compl
 ## 2026-09-10 — T11 done: unified-diff parser
 
 `parseDiff(diffText, numstatText)` walks raw git diff text into DiffFile[]/Hunk[]: added/deleted/renamed/modified statuses, hunk counts (count-less `@@ -3 +3 @@` defaults to 1), `\ No newline` marker handling, CRLF-safe content (trailing `\r` stripped), binary via numstat `-` rows (brace-form rename paths supported) with the diff-body `Binary files` line as fallback. 12 tests; suite 29 pass, typecheck clean. One test-fixture fix along the way: git always emits `a/`/`b/` prefixes even for deleted files.
+
+## 2026-09-10 — T12 done: review server skeleton + auth tiers
+
+`startReviewServer` on `127.0.0.1:0` (throws if Bun reports no port) with a `handlers` map keyed `"METHOD /path"` that later tasks extend, `generateReviewerToken` (32 random bytes base64url), timing-safe bearer check on the four control routes (401 without/malformed token; 404 until real handlers land), static serving for exactly `/`, `/app.js`, `/style.css` from `frontend/` (placeholders committed; real UI is T16), `/api/health` with repoPath for lockfile reuse. Real-server tests on ephemeral ports. Suite 34 pass, typecheck clean.
