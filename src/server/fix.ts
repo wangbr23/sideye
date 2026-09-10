@@ -40,6 +40,14 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
       comment: request.commentId !== undefined ? state.comments.find((c) => c.id === request.commentId)?.body : undefined,
     })),
     plan: submission.plan,
+    lessons: submission.payload.lessons.map((lesson) => ({
+      excerpt: lesson.excerpt,
+      provenance: {
+        round: lesson.provenance.round,
+        ...(lesson.provenance.file !== undefined ? { file: lesson.provenance.file } : {}),
+        ...(lesson.provenance.hunkIndex !== undefined ? { hunkIndex: lesson.provenance.hunkIndex } : {}),
+      },
+    })),
   })
 
   const stallTimeoutMs = options.stallTimeoutMs ?? FIX_STALL_TIMEOUT_MS

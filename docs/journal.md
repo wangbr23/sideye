@@ -161,3 +161,11 @@ Header gains a Submit button → Status tab. The tab renders the submission stat
 Browser e2e against a stub OpenCode over the real server exercised the WHOLE loop: submit → plan card renders from the stub plan → approve → (prompt_async + idle SSE behind the scenes) → status report card with check rows + consent card → capture → Round 2 appears in the selector. Debugging note: the e2e stub initially routed both the blocking plan prompt and the message-list read to one handler — they share the URL and differ by method (POST vs GET); the 500 surfaced in the UI as designed.
 
 This was the last UI piece of the review loop. Suite 100 pass, typecheck clean.
+
+## 2026-09-10 — T7 done: lesson capture plumbing
+
+`src/lesson.ts`: `buildLessonCandidates(state)` maps lesson-marked comments to LessonCandidates — excerpt (body truncated at 200 chars + ellipsis) and full provenance (source "sideye", repo, target rendered "worktree"/"commit <sha>", round, file/hunkIndex/lineRange when present). `submitReview` now serializes them into the payload (replacing the T21 placeholder empty array) — only lesson-marked comments, never all comments.
+
+Fix prompt gains a lesson block only when lessons exist: each candidate as a quoted excerpt with round/file/hunk provenance, the instruction to propose each via `swe_factory_propose_lesson` before finishing (title/body/rationale/scope/provenance per the tool's schema), and the degradation instruction — if the tool is unavailable, the agent says so explicitly in the affected request's status reason (which the Status tab renders; §7 forbids eager probing, §9 maps absence to a reported degradation). No lessons → no block, no mention.
+
+Tests: provenance completeness, truncation, payload inclusion (lessons ≠ all comments), empty-lessons submit, prompt block present/absent. Suite 106 pass, typecheck clean.

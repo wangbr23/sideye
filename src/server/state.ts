@@ -7,6 +7,7 @@ import {
 } from "../git/capture.ts"
 import { parseDiff } from "../git/parse.ts"
 import { questionPrompt, renderAnchorContext } from "../session/prompts.ts"
+import { buildLessonCandidates } from "../lesson.ts"
 
 export interface AppStateInit {
   token: string
@@ -209,9 +210,9 @@ export function acceptFinding(state: AppState, input: unknown): AcceptFindingRes
   return { ok: true, accepted: [...state.acceptedFindings] }
 }
 
-// Control-tier submit (LLD §5c): explicit user requests + accepted findings
-// serialize into the SubmitPayload stored on the state. Lesson candidates are
-// T7's plumbing — lessons stays empty until that lands.
+// Control-tier submit (LLD §5c): explicit user requests + accepted findings +
+// lesson-marked comments (as LessonCandidates, §7) serialize into the
+// SubmitPayload stored on the state.
 export type SubmitReviewResult = { ok: true; payload: SubmitPayload } | { ok: false; error: string }
 
 export function submitReview(state: AppState, input: unknown): SubmitReviewResult {
@@ -243,7 +244,7 @@ export function submitReview(state: AppState, input: unknown): SubmitReviewResul
     }
     payloadRequests.push({ id: crypto.randomUUID(), text: finding.claim, origin: "accepted-finding" })
   }
-  const payload: SubmitPayload = { requests: payloadRequests, lessons: [] }
+  const payload: SubmitPayload = { requests: payloadRequests, lessons: buildLessonCandidates(state) }
   state.submission = { payload }
   return { ok: true, payload }
 }
