@@ -1,4 +1,4 @@
-import type { AppState, DiffFile, ReviewTarget, Round } from "../types.ts"
+import type { AppState, Comment, DiffFile, ReviewTarget, Round } from "../types.ts"
 import {
   captureCommitDiff,
   captureTrackedDiff,
@@ -57,4 +57,122 @@ export async function captureRound(state: AppState): Promise<Round> {
   }
   state.rounds.push(round)
   return round
+}
+
+// Open-tier comment posting (LLD §4): author is required — attribution, not
+// auth — and the anchor must reference real structure in a frozen round.
+// lineRange is interpreted as new-side file line numbers within the hunk's
+// newStart..newStart+newLines-1 span.
+export type AddCommentResult = { ok: true; comment: Comment } | { ok: false; error: string }
+
+export function addComment(state: AppState, input: unknown): AddCommentResult {
+  if (typeof input !== "object" || input === null) {
+    return { ok: false, error: "request body must be a JSON object" }
+  }
+  const draft = input as Record<string, unknown>
+
+  const author = draft.author
+  if (typeof author !== "string" || author.trim() === "") {
+    return { ok: false, error: "author is required and must be a non-empty string" }
+  }
+
+  const body = draft.body
+  if (typeof body !== "string" || body.trim() === "") {
+    return { ok: false, error: "body is required and must be a non-empty string" }
+  }
+
+  const scope = draft.scope
+  if (scope !== "inline" && scope !== "file" && scope !== "overall") {
+    return { ok: false, error: `scope must be "inline", "file", or "overall"` }
+  }
+
+  const isLesson = draft.isLesson ?? false
+  if (typeof isLesson !== "boolean") {
+    return { ok: false, error: "isLesson must be a boolean when present" }
+  }
+
+  const anchor = draft.anchor
+  if (typeof anchor !== "object" || anchor === null) {
+    return { ok: false, error: "anchor is required and must be an object" }
+  }
+  const anchorFields = anchor as Record<string, unknown>
+
+  const roundNumber = anchorFields.round
+  const round = state.rounds.find((r) => r.n === roundNumber)
+  if (round === undefined) {
+    return {
+      ok: false,
+      error: `anchor.round ${String(roundNumber)} does not exist — rounds are 1-based and captured rounds only`,
+    }
+  }
+
+  const { file, hunkIndex, lineRange } = anchorFields
+  let anchoredFile: string | undefined
+  let anchoredHunkIndex: number | undefined
+  let anchoredLineRange: [number, number] | undefined
+
+  if (scope === "overall") {
+    if (file !== undefined || hunkIndex !== undefined || lineRange !== undefined) {
+      return { ok: false, error: "overall comments must not carry file, hunkIndex, or lineRange" }
+    }
+  } else {
+    if (typeof file !== "string" || !round.files.some((f) => f.path === file)) {
+      return { ok: false, error: `anchor.file ${describeValue(file)} does not exist in round ${round.n}` }
+    }
+    anchoredFile = file
+    if (scope === "file") {
+      if (hunkIndex !== undefined || lineRange !== undefined) {
+        return { ok: false, error: "file-scope comments must not carry hunkIndex or lineRange" }
+      }
+    } else {
+      if (typeof hunkIndex !== "number" || !Number.isInteger(hunkIndex) || hunkIndex < 0) {
+        return { ok: false, error: "inline comments require an integer anchor.hunkIndex >= 0" }
+      }
+      const hunk = round.files.find((f) => f.path === file)?.hunks[hunkIndex]
+      if (hunk === undefined) {
+        return { ok: false, error: `anchor.hunkIndex ${hunkIndex} does not exist in ${file} of round ${round.n}` }
+      }
+      if (lineRange !== undefined) {
+        if (
+          !Array.isArray(lineRange) ||
+          lineRange.length !== 2 ||
+          !lineRange.every((n) => typeof n === "number" && Number.isInteger(n))
+        ) {
+          return { ok: false, error: "anchor.lineRange must be a [start, end] pair of integers" }
+        }
+        const [start, end] = lineRange
+        const firstNewLine = hunk.newStart
+        const lastNewLine = hunk.newStart + hunk.newLines - 1
+        if (start === undefined || end === undefined || start > end) {
+          return { ok: false, error: "anchor.lineRange must be [start, end] with start <= end" }
+        }
+        if (start < firstNewLine || end > lastNewLine) {
+          return { ok: false, error: `anchor.lineRange must fall within the hunk's new-side lines ${firstNewLine}..${lastNewLine}` }
+        }
+        anchoredLineRange = [start, end]
+      }
+      anchoredHunkIndex = hunkIndex
+    }
+  }
+
+  const comment: Comment = {
+    id: crypto.randomUUID(),
+    author,
+    scope,
+    anchor: {
+      round: round.n,
+      ...(anchoredFile !== undefined ? { file: anchoredFile } : {}),
+      ...(anchoredHunkIndex !== undefined ? { hunkIndex: anchoredHunkIndex } : {}),
+      ...(anchoredLineRange !== undefined ? { lineRange: anchoredLineRange } : {}),
+    },
+    body,
+    isLesson,
+    createdAt: new Date().toISOString(),
+  }
+  state.comments.push(comment)
+  return { ok: true, comment }
+}
+
+function describeValue(value: unknown): string {
+  return typeof value === "string" ? `"${value}"` : String(value)
 }

@@ -3,7 +3,7 @@ import { $ } from "bun"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createState, captureRound } from "../src/server/state.ts"
+import { createState, captureRound, addComment } from "../src/server/state.ts"
 import type { ReviewTarget } from "../src/types.ts"
 
 let repoDir: string
@@ -115,5 +115,137 @@ describe("AppState store", () => {
       target: { kind: "commit", sha },
     })
     expect(captureRound(state)).rejects.toThrow(/merge/)
+  })
+})
+
+describe("addComment", () => {
+  // a.txt rewritten to three lines → hunk @@ -1 +1,3 @@: new-side span 1..3
+  test("valid inline comment appends with generated id and createdAt", async () => {
+    const state = createState({ token: "tok", sessionID: "ses_1", repoPath: repoDir, target: worktree })
+    writeFileSync(join(repoDir, "a.txt"), "one\ntwo\nthree\n")
+    await captureRound(state)
+
+    const result = addComment(state, {
+      author: "human",
+      scope: "inline",
+      anchor: { round: 1, file: "a.txt", hunkIndex: 0, lineRange: [2, 3] },
+      body: "this looks wrong",
+      isLesson: true,
+    })
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}`)
+    expect(result.comment.id).toBeTruthy()
+    expect(result.comment.createdAt).toBeTruthy()
+    expect(result.comment.author).toBe("human")
+    expect(result.comment.scope).toBe("inline")
+    expect(result.comment.anchor).toEqual({ round: 1, file: "a.txt", hunkIndex: 0, lineRange: [2, 3] })
+    expect(result.comment.body).toBe("this looks wrong")
+    expect(result.comment.isLesson).toBe(true)
+    expect(state.comments).toEqual([result.comment])
+  })
+
+  test("comments stay anchored to their round after later captures", async () => {
+    const state = createState({ token: "tok", sessionID: "ses_1", repoPath: repoDir, target: worktree })
+    writeFileSync(join(repoDir, "a.txt"), "one\ntwo\nthree\n")
+    await captureRound(state)
+    const result = addComment(state, {
+      author: "agent",
+      scope: "inline",
+      anchor: { round: 1, file: "a.txt", hunkIndex: 0 },
+      body: "round-1 note",
+    })
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}`)
+
+    writeFileSync(join(repoDir, "a.txt"), "four\nfive\nsix\n")
+    const second = await captureRound(state)
+    expect(second.n).toBe(2)
+    expect(state.comments).toHaveLength(1)
+    expect(state.comments[0]?.anchor).toEqual({ round: 1, file: "a.txt", hunkIndex: 0 })
+  })
+
+  test("missing, blank, or non-string author is rejected", () => {
+    const state = createState({ token: "tok", sessionID: "ses_1", repoPath: repoDir, target: worktree })
+    for (const author of [undefined, "", "   ", 42, null]) {
+      const result = addComment(state, {
+        author,
+        scope: "overall",
+        anchor: { round: 1 },
+        body: "x",
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error).toMatch(/author/)
+    }
+    expect(state.comments).toHaveLength(0)
+  })
+
+  test("anchor validation: unknown round, scope/field mismatch, missing file or hunk", async () => {
+    const state = createState({ token: "tok", sessionID: "ses_1", repoPath: repoDir, target: worktree })
+    writeFileSync(join(repoDir, "a.txt"), "one\ntwo\nthree\n")
+    await captureRound(state)
+
+    const cases: { input: unknown; error: RegExp }[] = [
+      { input: { author: "a", scope: "overall", anchor: { round: 2 }, body: "x" }, error: /anchor\.round/ },
+      { input: { author: "a", scope: "nope", anchor: { round: 1 }, body: "x" }, error: /scope/ },
+      {
+        input: { author: "a", scope: "overall", anchor: { round: 1, file: "a.txt" }, body: "x" },
+        error: /overall/,
+      },
+      {
+        input: { author: "a", scope: "file", anchor: { round: 1, file: "a.txt", hunkIndex: 0 }, body: "x" },
+        error: /file-scope/,
+      },
+      {
+        input: { author: "a", scope: "file", anchor: { round: 1, file: "missing.txt" }, body: "x" },
+        error: /anchor\.file/,
+      },
+      {
+        input: { author: "a", scope: "inline", anchor: { round: 1, file: "a.txt" }, body: "x" },
+        error: /hunkIndex/,
+      },
+      {
+        input: { author: "a", scope: "inline", anchor: { round: 1, file: "a.txt", hunkIndex: 5 }, body: "x" },
+        error: /anchor\.hunkIndex/,
+      },
+      {
+        input: { author: "a", scope: "inline", anchor: { round: 1, file: "a.txt", hunkIndex: 0, lineRange: [2, 9] }, body: "x" },
+        error: /lineRange/,
+      },
+      {
+        input: { author: "a", scope: "inline", anchor: { round: 1, file: "a.txt", hunkIndex: 0, lineRange: [3, 2] }, body: "x" },
+        error: /lineRange/,
+      },
+      { input: { author: "a", scope: "overall", anchor: { round: 1 } }, error: /body/ },
+      { input: "not an object", error: /JSON object/ },
+    ]
+    for (const { input, error } of cases) {
+      const result = addComment(state, input)
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error).toMatch(error)
+    }
+    expect(state.comments).toHaveLength(0)
+  })
+
+  test("file- and overall-scope comments anchor without hunk fields; isLesson defaults false", async () => {
+    const state = createState({ token: "tok", sessionID: "ses_1", repoPath: repoDir, target: worktree })
+    writeFileSync(join(repoDir, "a.txt"), "one\ntwo\nthree\n")
+    await captureRound(state)
+
+    const fileResult = addComment(state, {
+      author: "human",
+      scope: "file",
+      anchor: { round: 1, file: "a.txt" },
+      body: "file-level note",
+    })
+    if (!fileResult.ok) throw new Error(`expected ok, got: ${fileResult.error}`)
+    expect(fileResult.comment.anchor).toEqual({ round: 1, file: "a.txt" })
+    expect(fileResult.comment.isLesson).toBe(false)
+
+    const overallResult = addComment(state, {
+      author: "lint-bot",
+      scope: "overall",
+      anchor: { round: 1 },
+      body: "general note",
+    })
+    if (!overallResult.ok) throw new Error(`expected ok, got: ${overallResult.error}`)
+    expect(overallResult.comment.anchor).toEqual({ round: 1 })
   })
 })
