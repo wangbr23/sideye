@@ -75,6 +75,9 @@ export interface AnalysisResult {
     claim: string
     citations: Evidence[]
   }[]
+  // plain-text fallback: batches whose structured output failed validation even
+  // after one repair retry land here verbatim (LLD §7 "unparsed analysis" pane)
+  unparsed?: string
 }
 
 export interface SubmitPayload {

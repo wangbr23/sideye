@@ -1,6 +1,7 @@
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2"
 
 export type OpenCodeClient = OpencodeClient
+export type { AssistantMessage, Part } from "@opencode-ai/sdk/v2"
 
 export interface SessionClientOptions {
   baseUrl: string
