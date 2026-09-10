@@ -1,1 +1,178 @@
-/* Placeholder — review UI styling lands in T16. */
+/* Review UI — split view: diff pane + side panel (LLD §8). */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  color: #1f2430;
+  background: #f6f7f9;
+}
+
+.hidden {
+  display: none;
+}
+
+.banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 8px 16px;
+  background: #b3261e;
+  color: #fff;
+  text-align: center;
+  z-index: 10;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 12px 16px;
+  background: #fff;
+  border-bottom: 1px solid #ddd;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+#target-label {
+  color: #57606a;
+  font-size: 14px;
+}
+
+#round-label {
+  margin-left: auto;
+  font-size: 14px;
+}
+
+main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  padding: 16px;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  main {
+    grid-template-columns: 1fr;
+  }
+}
+
+#diff-pane,
+#side-panel {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+}
+
+#side-panel {
+  padding: 12px;
+  font-size: 14px;
+  min-height: 200px;
+}
+
+.file {
+  margin-bottom: 16px;
+}
+
+.file-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  background: #eceef1;
+  border-bottom: 1px solid #ddd;
+  border-radius: 6px 6px 0 0;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  color: #fff;
+}
+
+.badge.added,
+.badge.untracked {
+  background: #1a7f37;
+}
+
+.badge.modified,
+.badge.renamed {
+  background: #9e6a03;
+}
+
+.badge.deleted {
+  background: #cf222e;
+}
+
+.badge.note {
+  background: #57606a;
+  font-weight: 400;
+}
+
+.hunk {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 21px;
+}
+
+.hunk.pending {
+  background: repeating-linear-gradient(45deg, #f6f7f9, #f6f7f9 12px, #eceef1 12px, #eceef1 24px);
+}
+
+.hunk-header {
+  padding: 2px 12px;
+  background: #dbedff;
+  color: #24292f;
+  white-space: pre;
+}
+
+.diff-line {
+  display: flex;
+  white-space: pre;
+}
+
+.diff-line .ln {
+  flex: 0 0 48px;
+  padding-right: 8px;
+  text-align: right;
+  color: #8c959f;
+  user-select: none;
+}
+
+.diff-line .origin {
+  flex: 0 0 20px;
+  text-align: center;
+  color: #8c959f;
+  user-select: none;
+}
+
+.diff-line .content {
+  overflow-wrap: anywhere;
+}
+
+.diff-line.add {
+  background: #dafbe1;
+}
+
+.diff-line.del {
+  background: #ffebe9;
+}
+
+.empty {
+  padding: 12px 16px;
+  color: #57606a;
+  font-size: 14px;
+}

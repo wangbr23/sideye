@@ -1,13 +1,28 @@
 <!doctype html>
-<!-- Placeholder shell — the real review UI lands in T16. -->
 <html>
   <head>
+    <meta charset="utf-8" />
     <title>Sideye review</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <h1>Sideye</h1>
-    <p>Review UI not implemented yet.</p>
+    <div id="reconnect-banner" class="banner hidden" role="alert">
+      Connection to the review server lost — retrying…
+    </div>
+    <header>
+      <h1>Sideye</h1>
+      <span id="target-label"></span>
+      <label id="round-label">
+        Round
+        <select id="round-select" disabled></select>
+      </label>
+    </header>
+    <main>
+      <section id="diff-pane"></section>
+      <aside id="side-panel">
+        <p class="empty">Analysis, findings, and comments appear here once posted.</p>
+      </aside>
+    </main>
     <script src="/app.js"></script>
   </body>
 </html>
