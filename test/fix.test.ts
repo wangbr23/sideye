@@ -5,6 +5,7 @@ import { startReviewServer } from "../src/server/http.ts"
 import { createSessionClient } from "../src/session/client.ts"
 import type { OpenCodeClient } from "../src/session/client.ts"
 import type { AppState, Plan, SubmitPayload } from "../src/types.ts"
+import { fixPrompt } from "../src/session/prompts.ts"
 
 // Fix + status flow e2e over real HTTP: the stub OpenCode serves the health
 // check, prompt_async, the message list, and a live /event SSE stream that
@@ -105,6 +106,20 @@ async function startWithClient(state: AppState, client: OpenCodeClient | undefin
 }
 
 describe("fix + status flow", () => {
+  test("fix prompt renders comment-origin requests with author, anchor, and the respond-in-reason note", () => {
+    const prompt = fixPrompt({
+      requests: [
+        { id: "r1", text: "split the loop", origin: "user" },
+        { id: "c1", text: "rename this variable", origin: "comment", comment: { author: "lint-bot", anchor: { round: 1, file: "a.txt", hunkIndex: 0 } } },
+      ],
+      plan: { perRequest: [] },
+    })
+    expect(prompt).toContain("request r1 (origin: user)")
+    expect(prompt).toContain("request c1 (origin: comment, author: lint-bot, round 1, file a.txt, hunk 0)")
+    expect(prompt).toContain("rename this variable")
+    expect(prompt).toContain("respond in the status reason")
+  })
+
   test("approval triggers the fix prompt; statuses land on session.idle via SSE", async () => {
     const stub = await stubOpencode({ structured: validStatuses })
     const state = stateReadyToFix()

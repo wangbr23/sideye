@@ -3,7 +3,7 @@ import { $ } from "bun"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createState, captureRound, addComment, acceptFinding, submitReview } from "../src/server/state.ts"
+import { createState, captureRound, addComment, deleteComment, acceptFinding, submitReview } from "../src/server/state.ts"
 import type { ReviewTarget } from "../src/types.ts"
 
 let repoDir: string
@@ -250,6 +250,37 @@ describe("addComment", () => {
   })
 })
 
+describe("deleteComment", () => {
+  test("removes the comment by id and keeps the others", async () => {
+    const state = createState({ token: "tok", sessionID: "ses_1", repoPath: repoDir, target: worktree })
+    writeFileSync(join(repoDir, "a.txt"), "one\ntwo\nthree\n")
+    await captureRound(state)
+    const first = addComment(state, { author: "human", scope: "overall", anchor: { round: 1 }, body: "first" })
+    const second = addComment(state, {
+      author: "agent",
+      scope: "inline",
+      anchor: { round: 1, file: "a.txt", hunkIndex: 0, lineRange: [2, 2] },
+      body: "second",
+    })
+    if (!first.ok || !second.ok) throw new Error("fixture comments rejected")
+
+    const result = deleteComment(state, { id: second.comment.id })
+    expect(result).toEqual({ ok: true, id: second.comment.id })
+    expect(state.comments.map((c) => c.id)).toEqual([first.comment.id])
+    const again = deleteComment(state, { id: second.comment.id })
+    expect(again.ok).toBe(false)
+    if (!again.ok) expect(again.error).toMatch(/does not exist/)
+  })
+
+  test("malformed input is rejected", () => {
+    const state = createState({ token: "tok", sessionID: "ses_1", repoPath: repoDir, target: worktree })
+    expect(deleteComment(state, undefined).ok).toBe(false)
+    expect(deleteComment(state, "not-an-object").ok).toBe(false)
+    expect(deleteComment(state, { id: 42 }).ok).toBe(false)
+    expect(deleteComment(state, { id: "" }).ok).toBe(false)
+  })
+})
+
 describe("acceptFinding and submitReview", () => {
   const finding = { id: "f1", file: "a.txt", claim: "off-by-one in the loop", citations: [] }
 
@@ -307,12 +338,47 @@ describe("acceptFinding and submitReview", () => {
     expect(state.submission).toBeUndefined()
   })
 
-  test("submit without accepted findings and without requests yields an empty payload", async () => {
+  test("submit joins every comment as a comment-origin request with a snapshot", async () => {
     const state = stateWithAnalysis()
-    await captureRound(state) // analysis references round 1 which now exists
+    writeFileSync(join(repoDir, "a.txt"), "one\ntwo\nthree\n")
+    await captureRound(state)
+    const human = addComment(state, {
+      author: "human",
+      scope: "overall",
+      anchor: { round: 1 },
+      body: "why is this a loop?",
+    })
+    if (!human.ok) throw new Error(`expected ok, got: ${human.error}`)
+    const bot = addComment(state, {
+      author: "lint-bot",
+      scope: "inline",
+      anchor: { round: 1, file: "a.txt", hunkIndex: 0, lineRange: [2, 2] },
+      body: "rename this variable",
+    })
+    if (!bot.ok) throw new Error(`expected ok, got: ${bot.error}`)
+
     const result = submitReview(state, {})
     if (!result.ok) throw new Error(`expected ok, got: ${result.error}`)
-    expect(result.payload).toEqual({ requests: [], lessons: [] })
-    expect(state.submission?.payload).toEqual(result.payload)
+    const [first, second] = result.payload.requests
+    expect(first).toEqual({
+      id: human.comment.id,
+      text: "why is this a loop?",
+      origin: "comment",
+      comment: { author: "human", anchor: { round: 1 } },
+    })
+    expect(second).toEqual({
+      id: bot.comment.id,
+      text: "rename this variable",
+      origin: "comment",
+      comment: { author: "lint-bot", anchor: { round: 1, file: "a.txt", hunkIndex: 0, lineRange: [2, 2] } },
+    })
+  })
+
+  test("submit is rejected when there is nothing to send", () => {
+    const state = stateWithAnalysis()
+    const result = submitReview(state, {})
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/nothing to submit/)
+    expect(state.submission).toBeUndefined()
   })
 })

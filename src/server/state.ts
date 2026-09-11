@@ -176,6 +176,29 @@ export function addComment(state: AppState, input: unknown): AddCommentResult {
   return { ok: true, comment }
 }
 
+// Control-tier comment deletion (LLD §4): posting is open-tier (attribution,
+// not auth) but deleting is destructive to the shared review record, so it sits
+// behind the human-control gate like submit/plan-approval/rounds. Already
+// submitted payloads are unaffected — lessons carry excerpts and request bodies
+// resolve at plan/fix time.
+export type DeleteCommentResult = { ok: true; id: string } | { ok: false; error: string }
+
+export function deleteComment(state: AppState, input: unknown): DeleteCommentResult {
+  if (typeof input !== "object" || input === null) {
+    return { ok: false, error: "request body must be a JSON object" }
+  }
+  const id = (input as Record<string, unknown>).id
+  if (typeof id !== "string" || id.trim() === "") {
+    return { ok: false, error: "id is required and must be a non-empty string" }
+  }
+  const index = state.comments.findIndex((c) => c.id === id)
+  if (index === -1) {
+    return { ok: false, error: `comment ${id} does not exist` }
+  }
+  state.comments.splice(index, 1)
+  return { ok: true, id }
+}
+
 // Control-tier finding acceptance (LLD §4): marks an analysis finding for the
 // submit payload. The finding must exist in the round's analysis; duplicates
 // are rejected so the submit payload never double-lists a claim.
@@ -211,8 +234,9 @@ export function acceptFinding(state: AppState, input: unknown): AcceptFindingRes
 }
 
 // Control-tier submit (LLD §5c): explicit user requests + accepted findings +
-// lesson-marked comments (as LessonCandidates, §7) serialize into the
-// SubmitPayload stored on the state.
+// every comment (all comments reach the agent as work items; lesson-marked
+// ones additionally serialize as LessonCandidates, §7) into the SubmitPayload
+// stored on the state.
 export type SubmitReviewResult = { ok: true; payload: SubmitPayload } | { ok: false; error: string }
 
 export function submitReview(state: AppState, input: unknown): SubmitReviewResult {
@@ -243,6 +267,20 @@ export function submitReview(state: AppState, input: unknown): SubmitReviewResul
       return { ok: false, error: `accepted finding ${accepted.findingId} vanished from round ${accepted.round} analysis` }
     }
     payloadRequests.push({ id: crypto.randomUUID(), text: finding.claim, origin: "accepted-finding" })
+  }
+  for (const comment of state.comments) {
+    payloadRequests.push({
+      id: comment.id,
+      text: comment.body,
+      origin: "comment",
+      comment: { author: comment.author, anchor: { ...comment.anchor } },
+    })
+  }
+  if (payloadRequests.length === 0) {
+    return {
+      ok: false,
+      error: "nothing to submit — leave comments, accept findings, or type requests in the submit card first",
+    }
   }
   const payload: SubmitPayload = { requests: payloadRequests, lessons: buildLessonCandidates(state) }
   state.submission = { payload }

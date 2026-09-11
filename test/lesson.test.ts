@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { createState } from "../src/server/state.ts"
-import { submitReview } from "../src/server/state.ts"
+import { createState, submitReview, deleteComment } from "../src/server/state.ts"
 import { buildLessonCandidates } from "../src/lesson.ts"
 import { fixPrompt } from "../src/session/prompts.ts"
 import type { AppState } from "../src/types.ts"
@@ -78,17 +77,30 @@ describe("buildLessonCandidates", () => {
 })
 
 describe("submit payload lessons", () => {
-  test("submit serializes lesson candidates, not all comments", async () => {
+  test("submit serializes lesson candidates; every comment also joins as a request", () => {
     const state = stateWithLessons()
     const result = submitReview(state, { requests: ["apply the insight"] })
     if (!result.ok) throw new Error(`expected ok, got: ${result.error}`)
     expect(result.payload.lessons).toEqual(buildLessonCandidates(state))
     expect(result.payload.lessons).toHaveLength(1)
     expect(state.comments).toHaveLength(2)
+    const commentRequests = result.payload.requests.filter((r) => r.origin === "comment")
+    expect(commentRequests).toHaveLength(2)
+    expect(commentRequests.map((r) => r.id)).toEqual(["c1", "c2"])
+    expect(commentRequests[0]).toMatchObject({ text: state.comments[0]?.body, comment: { author: "human" } })
   })
 
   test("submit without lesson-marked comments carries an empty lessons array", () => {
     const state = createState({ token: "t", sessionID: "s", repoPath: "/r", target: { kind: "worktree" } })
+    const result = submitReview(state, { requests: ["x"] })
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}`)
+    expect(result.payload.lessons).toEqual([])
+  })
+
+  test("deleting a lesson-marked comment pre-submit keeps it out of the payload", () => {
+    const state = stateWithLessons()
+    const deleted = deleteComment(state, { id: "c1" })
+    if (!deleted.ok) throw new Error(`expected ok, got: ${deleted.error}`)
     const result = submitReview(state, {})
     if (!result.ok) throw new Error(`expected ok, got: ${result.error}`)
     expect(result.payload.lessons).toEqual([])

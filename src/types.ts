@@ -84,8 +84,11 @@ export interface SubmitPayload {
   requests: {
     id: string
     text: string
-    origin: "user" | "accepted-finding"
-    commentId?: string
+    origin: "user" | "accepted-finding" | "comment"
+    // comment-origin requests snapshot their source comment at submit time —
+    // the payload is the immutable work order, so deleting the comment later
+    // never changes what the agent sees. id === comment.id for traceability.
+    comment?: { author: string; anchor: Comment["anchor"] }
   }[]
   lessons: LessonCandidate[]
 }
@@ -126,8 +129,12 @@ export interface AppState {
   acceptedFindings: { round: number; findingId: string }[] // marked pre-submit, serialized on submit
   submission?: {
     payload: SubmitPayload
+    // plan prompt dispatched, reply not in yet (background like the fix flow)
+    planning?: boolean
     plan?: Plan
     planApproved?: boolean
+    // background plan prompt failed (validation or transport) — retryable
+    planError?: string
     statuses?: RequestStatus[]
     roundPrompted?: boolean
     // fix-flow failure modes (LLD §9): the session never went idle within the

@@ -37,7 +37,7 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
       id: request.id,
       text: request.text,
       origin: request.origin,
-      comment: request.commentId !== undefined ? state.comments.find((c) => c.id === request.commentId)?.body : undefined,
+      comment: request.comment,
     })),
     plan: submission.plan,
     lessons: submission.payload.lessons.map((lesson) => ({
