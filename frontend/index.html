@@ -3,29 +3,32 @@
   <head>
     <meta charset="utf-8" />
     <title>Sideye review</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" />
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
     <div id="reconnect-banner" class="banner hidden" role="alert">
       Connection to the review server lost — retrying…
     </div>
-    <header>
-      <h1>Sideye</h1>
-      <span id="target-label"></span>
-      <button id="submit-review" type="button">Submit</button>
-      <button id="overall-comment" type="button">Comment</button>
-      <label id="round-label">
-        Round
-        <select id="round-select" disabled></select>
-      </label>
+    <header class="header">
+      <span class="header-logo">sideye</span>
+      <span id="target-label" class="header-target"></span>
+      <div class="header-right">
+        <select id="round-select" class="round-select" disabled></select>
+        <button id="overall-comment" class="btn" type="button">Comment</button>
+        <button id="submit-review" class="btn btn-primary" type="button" title="Send your comments, accepted findings, and typed requests to the agent">Submit</button>
+      </div>
     </header>
-    <main>
-      <section id="diff-pane"></section>
-      <aside id="side-panel">
-        <nav id="panel-tabs" aria-label="Review panel"></nav>
-        <div id="panel-content"></div>
-      </aside>
-    </main>
+    <div class="layout">
+      <nav id="file-nav" class="file-nav">
+        <div class="file-nav-header">Changed files</div>
+      </nav>
+      <main id="diff-pane" class="diff-pane"></main>
+    </div>
+    <div id="action-bar" class="action-bar" hidden>
+      <div id="action-bar-summary" class="action-bar-summary"></div>
+      <div id="action-drawer" class="action-drawer"></div>
+    </div>
     <script src="/app.js"></script>
   </body>
 </html>
