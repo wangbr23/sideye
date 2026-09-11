@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { createHash } from "node:crypto"
 import { $ } from "bun"
 import { launchReview, stopReview, type LaunchResult } from "../src/launch.ts"
+import { createSessionClient } from "../src/session/client.ts"
 
 let repoDir: string
 let scratchDir: string
@@ -73,6 +74,61 @@ describe("launchReview", () => {
     expect(second.reused).toBe(true)
     expect(second.url).toBe(first.url)
     expect(second.port).toBe(first.port)
+  })
+
+  test("launch runs round-1 analysis when a session client is linked", async () => {
+    // Stub OpenCode: health for the client link, then a valid structured
+    // analysis response for every analysis prompt (never reads the body —
+    // leaked requests must not wedge the stub).
+    const validAnalysis = {
+      files: [
+        { file: "a.txt", purpose: "changes the greeting", confidence: "evidence", citations: [{ source: "a.txt", quote: "changed" }] },
+      ],
+      hunks: [{ file: "a.txt", hunkIndex: 0, rationale: "reworded", confidence: "inference", citations: [] }],
+      findings: [{ id: "f1", file: "a.txt", hunkIndex: 0, claim: "greeting lost its i18n", citations: [] }],
+    }
+    const opencode = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (req) => {
+        if (new URL(req.url).pathname === "/global/health") {
+          return Response.json({ healthy: true, version: "stub-1.0" })
+        }
+        return Response.json({
+          info: { id: "msg_1", sessionID: "ses_launch", role: "assistant", structured: validAnalysis },
+          parts: [{ id: "p1", sessionID: "ses_launch", messageID: "msg_1", type: "text", text: "ok" }],
+        })
+      },
+    })
+    try {
+      const client = await createSessionClient({
+        baseUrl: `http://127.0.0.1:${opencode.port}`,
+        healthTimeoutMs: 1000,
+      })
+      const result = await launchReview({
+        repoPath: repoDir,
+        sessionID: "ses_launch",
+        target: { kind: "worktree" },
+        openBrowser: false,
+        client,
+      })
+      // analysis lands asynchronously — poll state until round 1 has one
+      const deadline = Date.now() + 5000
+      let analysis: { files: unknown[]; findings: unknown[] } | undefined
+      while (Date.now() < deadline) {
+        const state = (await (await fetch(`http://127.0.0.1:${result.port}/api/state`)).json()) as {
+          analysis: Record<string, { files: unknown[]; findings: unknown[] } | undefined>
+        }
+        analysis = state.analysis["1"]
+        if (analysis) break
+        await Bun.sleep(50)
+      }
+      expect(analysis).toBeDefined()
+      expect(analysis!.files.length).toBeGreaterThan(0)
+      expect(analysis!.findings.length).toBeGreaterThan(0)
+    } finally {
+      opencode.stop(true)
+    }
   })
 
   test("reuses another process's review while its pid is alive and healthy", async () => {

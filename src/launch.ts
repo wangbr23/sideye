@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { buildHandlers } from "./server/routes.ts"
 import { generateReviewerToken, startReviewServer, type RunningReviewServer } from "./server/http.ts"
+import { runAnalysis } from "./server/analysis.ts"
 import { captureRound, createState } from "./server/state.ts"
 import type { OpenCodeClient } from "./session/client.ts"
 import type { ReviewTarget } from "./types.ts"
@@ -17,8 +18,8 @@ export interface LaunchOptions {
   repoPath: string
   sessionID: string
   target: ReviewTarget
-  // linked OpenCode session client — the Q&A route needs it; analysis (T19)
-  // callers hold their own reference. Optional until T8/T24 wire their flows.
+  // linked OpenCode session client — round-1 analysis, Q&A, submit/plan/fix
+  // flows all prompt through it. Optional: tests launch without a session.
   client?: OpenCodeClient
   openBrowser?: boolean // default true — best-effort, failure never blocks the launch
 }
@@ -55,7 +56,16 @@ export async function launchReview(options: LaunchOptions): Promise<LaunchResult
   })
   // Round 1 is captured here so capture failures (merge target, bad sha)
   // surface at launch with a clear error (§9) instead of a round-less review.
-  await captureRound(state)
+  const round = await captureRound(state)
+
+  // Round-1 analysis starts with the launch, in the background like every
+  // other session flow — the Analysis/Findings tabs fill via analysis.update
+  // SSE. Later rounds are analyzed by POST /api/rounds on consented capture.
+  if (options.client) {
+    void runAnalysis(state, round, options.client).catch((err) => {
+      console.error("analysis failed for round", round.n, err)
+    })
+  }
 
   const server = startReviewServer({
     repoPath: options.repoPath,
