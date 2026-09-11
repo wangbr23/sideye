@@ -10,10 +10,35 @@ An OpenCode plugin that provides a browser-based code review platform: structure
 
 ## Install
 
+From source — the only path today, the package is not yet on npm (tracked as T27 in TODO.md):
+
 ```sh
 git clone <this repo> && cd sideye
 bun install
 ```
+
+Once published, third-party install will be:
+
+```sh
+# plugin: add to opencode.json
+{ "plugin": ["<package-name>"] }
+
+# slash command: copy from the installed package
+cp node_modules/<package-name>/command/sideye.md .opencode/command/sideye.md
+
+# or CLI-only, no opencode config needed
+bunx <package-name> review
+```
+
+## How it works
+
+Sideye is a Bun package with three surfaces over one in-process review server:
+
+- **Entry points** — the `sideye review` CLI (boots a dedicated headless OpenCode if none is running) or the plugin's `sideye_open_review` tool (binds to the calling TUI session). Both capture the diff — worktree changes vs HEAD, or one commit vs its first parent — parse it into files and hunks, and start a loopback `Bun.serve` server holding all state in memory.
+- **Browser frontend** — served by that server; renders the diff per round with the analysis panel (per-file purposes, per-hunk rationales, evidence-cited findings), three comment scopes, Q&A, and the submit/plan/fix/status handoff. Live updates over SSE.
+- **OpenCode session** — the analysis, Q&A, plan, and fix prompts all run through the session that launched the review, so the reviewer and the agent share context.
+
+State is process-local by design: the review dies with its launcher, and a lockfile in `$TMPDIR/sideye/` lets a second launch return the running review's URL instead of starting a new one.
 
 ## Launch path 1 — CLI
 

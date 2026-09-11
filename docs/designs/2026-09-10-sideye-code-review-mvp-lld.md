@@ -102,7 +102,11 @@ interface AnalysisResult {                          // one per round, possibly m
 }
 
 interface SubmitPayload {
-  requests: { id: string; text: string; origin: "user" | "accepted-finding"; commentId?: string }[]
+  // every comment joins as a comment-origin request (id = comment id) with a
+  // submit-time snapshot { author, anchor } — the payload is the immutable
+  // work order; later comment deletion never changes what the agent sees
+  requests: { id: string; text: string; origin: "user" | "accepted-finding" | "comment";
+              comment?: { author: string; anchor: { round: number; file?: string; hunkIndex?: number; lineRange?: [number, number] } } }[]
   lessons: LessonCandidate[]
 }
 
@@ -152,11 +156,12 @@ The control token is an honest-agent boundary, not a malware defense — see the
 | GET | `/` | open | Static frontend (index.html, app.js, style.css) |
 | GET | `/api/health` | open | Liveness + repo path (used by lockfile reuse check) |
 | GET | `/api/state` | open | Full AppState projection — initial load + SSE reconnect |
-| GET | `/api/events` | open | SSE stream: `analysis.update`, `answer`, `plan.ready`, `status.ready`, `round.prompt` |
+| GET | `/api/events` | open | SSE stream: `analysis.update`, `answer`, `plan.pending`, `plan.ready`, `plan.failed`, `status.ready`, `round.prompt` |
 | POST | `/api/comments` | open | Add comment `{ scope, anchor, body, isLesson, author }` — `author` required, no default |
 | POST | `/api/questions` | open | Immediate Q&A → routes through session → reply also pushed via SSE |
 | POST | `/api/findings/accept` | control | Mark a finding as an accepted request |
-| POST | `/api/submit` | control | Submit requests + lesson-marked comments → triggers plan prompt |
+| POST | `/api/submit` | control | Submit requests + accepted findings + every comment → returns immediately; the plan prompt dispatches in the background |
+| POST | `/api/plan/retry` | control | Re-dispatch the background plan prompt after a `plan.failed` (requires a submission, no plan, not currently planning) |
 | POST | `/api/plan/approve` | control | Second approval → authorizes edit prompt |
 | POST | `/api/rounds` | control | Capture a new round (only offered after status report) |
 
@@ -178,8 +183,8 @@ Honest limits of this scheme, stated rather than hidden: (a) the lockfile publis
 4. Frontend renders diff from server-parsed hunks (no client-side diffing) plus the analysis side panel.
 
 **(c) Submit handoff.**
-1. Reviewer hits Submit → `POST /api/submit` with explicit requests + accepted findings + lesson-marked comment IDs → server serializes the `SubmitPayload`.
-2. Plan prompt (structured output: per-request approach + affected files) → SSE `plan.ready` → plan card in UI.
+1. Reviewer hits Submit → `POST /api/submit` with explicit requests; accepted findings and **every comment** join automatically (comments as comment-origin requests with author + anchor snapshots; lesson-marked ones additionally serialize as LessonCandidates) → server serializes the `SubmitPayload`. An empty review (no comments, findings, requests) is rejected.
+2. The plan prompt (structured output: per-request approach + affected files) dispatches **in the background** like the fix flow — the submit response returns immediately, the UI shows a live planning card (the sent items with origin/author tags, the linked session id, a "can take a minute" note), and `plan.pending` → `plan.ready` events update every tab. After validation, Sideye also formats the plan as Markdown and adds it as a text part on the same assistant message via `client.part.update`, because OpenCode's structured output is not itself visible in the TUI. This mirror is best-effort and never invalidates the canonical browser plan. Failure stores `planError` + SSE `plan.failed` → failure card with a Retry button (`POST /api/plan/retry`); the payload stays stored.
 3. Reviewer approves → `POST /api/plan/approve` → fix prompt authorizes editing, requires a per-request `RequestStatus` report and that relevant checks (from AGENTS.md's Commands section) run before finishing; lesson candidates included with the instruction to propose each via `swe_factory_propose_lesson` before finishing.
 4. Server subscribes to the OpenCode event bus and watches `session.idle` for the originating session (10-minute stall timeout → UI reports the session stopped responding; review stays usable).
 5. Statuses arrive as structured output → SSE `status.ready` → UI status card → round-consent card ("capture round N?"). Consent → `POST /api/rounds` → new capture → round N+1; round-1 comments remain viewable under their round. Review completes only on explicit human approval — nothing auto-completes.
@@ -219,11 +224,12 @@ Lesson capture: `lesson.ts` builds `LessonCandidate`s from lesson-marked comment
 
 ## 8. Frontend
 
-Single page, no framework, no bundler. Layout: header (target, round selector, Submit) + split view — diff pane (files → hunks rendered from server JSON) and side panel (tabs: Analysis, Findings, Comments, Status).
+Single page, no framework, no bundler. Layout: header (target, round selector, Submit — the real submit action; it picks up typed requests from the Status-tab card when visible) + split view — diff pane (files → hunks rendered from server JSON) and side panel (tabs: Analysis, Findings, Comments, Status). The button labels itself "Submitting…" in flight and "Submitted" (disabled) once a submission exists.
 
 - **Commenting:** gutter click on a hunk line → inline comment box (scope inferred inline; file header button → file scope; header → overall). "Mark as lesson" checkbox on the form sets `isLesson`. Comments posted through the open API carry an `author`, shown beside the comment.
 - **Findings** render as a visually distinct section, each with an "accept as request" control; accepted findings join the submit payload — never auto-submitted; the plan card labels each request's origin and author.
 - **Updates:** SSE push; on disconnect the client retries and on reconnect does a full `GET /api/state` refetch (no incremental sync to keep the client dumb). A persistent banner appears after repeated reconnect failures — consistent with "review dies with its launcher".
+- **Planning feedback (the submit → plan dead zone):** after submit the Status tab shows a live planning card until the plan lands — how many items are being planned, the sent items with origin/author tags, the linked session id, and a "can take a minute" note. The originating TUI shows the `sideye:` prompt immediately and the validated fix plan as a Markdown assistant text part when ready. A failed plan renders the error with a Retry button; a review with no linked session says so instead of planning forever.
 - Large diffs: hunks render lazily (expand-on-scroll within a file); files render top-down.
 
 ## 9. Failure and degradation paths
@@ -232,6 +238,9 @@ Single page, no framework, no bundler. Layout: header (target, round selector, S
 |---|---|
 | swe-factory absent/toggled off | Reported by the agent in the status report → UI note; review loop unaffected |
 | Structured output invalid | One repair retry → plain-text fallback pane |
+| Plan prompt fails (validation twice / transport) | `planError` stored + SSE `plan.failed` → failure card with Retry (`POST /api/plan/retry`); payload stays stored |
+| TUI plan mirror fails | Warning logged; canonical browser plan and approval flow remain available |
+| No linked session at submit | `sessionLinked: false` in the projection → Status tab states no plan can be drafted instead of an eternal planning state |
 | Merge commit as target | Rejected at launch with message |
 | `session.idle` never fires | 10-min stall timeout → UI states the session stopped responding; state remains reviewable |
 | Launcher process dies | Review ends (process-local by design); browser shows reconnect banner |
@@ -243,9 +252,10 @@ Single page, no framework, no bundler. Layout: header (target, round selector, S
 
 - `capture.test.ts` — worktree snapshot (staged + unstaged + untracked vs HEAD), `.gitignore` exclusion, size caps, untracked synthetic hunks, merge rejection, root commit, commit-vs-parent.
 - `parse.test.ts` — unified diff → files/hunks: new file, deleted file, rename, hunk without trailing context, CRLF.
-- `state.test.ts` — comment anchoring round-scoping; submit-payload serialization (only explicit requests + accepted findings + lesson-marked comments; never all comments).
+- `state.test.ts` — comment anchoring round-scoping; submit-payload serialization (explicit requests + accepted findings + every comment as comment-origin requests; lesson-marked ones also as LessonCandidates; empty review rejected).
 - `auth.test.ts` — real `Bun.serve` on an ephemeral port: control routes (submit/approve/rounds) without the reviewer token → 401, with it → 200; open routes (state, comments, questions) work without a token; `POST /api/comments` without `author` → 400. Server never writes review data to disk (lockfile contents asserted as metadata-only).
 - `schemas.test.ts` — sample structured outputs validate against zod schemas; malformed input routes to fallback.
+- `plan.test.ts` — asynchronous submit/plan/retry lifecycle; validated plan Markdown is added to the correct assistant message; TUI mirror failure does not invalidate the browser plan.
 
 Manual acceptance scenarios are the HLD's list, unchanged — this LLD adds no new acceptance scenarios.
 
@@ -256,3 +266,4 @@ Manual acceptance scenarios are the HLD's list, unchanged — this LLD adds no n
 3. **Batch size (5 files / 400 lines)** — starting values, tuned through use like the analysis prompt wording (spec open item).
 4. **UI look and feel** — prototype-first per the spec's explicitly-open item; §8 pins only structure, not visual design.
 5. **Agent API surface** — external agents will depend on the open routes; keep the shape tiny and mark it experimental until a second real consumer exists. Author labels are honor-system — a local agent can claim `"human"`; accepted for MVP.
+6. **Post-submit comments have no channel** — submit runs once per review, so comments left after it (e.g. on a round-2 diff) reach the agent only via Q&A; there is no re-submit or comment-injection mechanism yet. Deferred until the round-2 workflow proves whether one is needed.
