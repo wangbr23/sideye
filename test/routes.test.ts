@@ -162,6 +162,67 @@ describe("control-tier routes (findings/accept, submit)", () => {
   })
 })
 
+describe("POST /api/comments/delete", () => {
+  test("token-guarded: deletes a comment and it disappears from the projection", async () => {
+    const state = createState({ token: generateReviewerToken(), sessionID: "ses_1", repoPath: repoDir, target: { kind: "worktree" } })
+    await captureRound(state)
+    const server = startServer(state)
+    try {
+      const post = await fetch(`${base(server)}/api/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ author: "human", scope: "overall", anchor: { round: 1 }, body: "note" }),
+      })
+      expect(post.status).toBe(200)
+      const comment = (await post.json()) as { id: string }
+
+      const del = await fetch(`${base(server)}/api/comments/delete`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ id: comment.id }),
+      })
+      expect(del.status).toBe(200)
+      expect(await del.json()).toEqual({ deleted: comment.id })
+
+      const projected = (await (await fetch(`${base(server)}/api/state`)).json()) as { comments: unknown[] }
+      expect(projected.comments).toHaveLength(0)
+    } finally {
+      server.stop()
+    }
+  })
+
+  test("unknown id and malformed input return 400", async () => {
+    const state = createState({ token: generateReviewerToken(), sessionID: "ses_1", repoPath: repoDir, target: { kind: "worktree" } })
+    const server = startServer(state)
+    const auth = { authorization: `Bearer ${state.token}`, "content-type": "application/json" }
+    try {
+      const ghost = await fetch(`${base(server)}/api/comments/delete`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ id: "ghost" }),
+      })
+      expect(ghost.status).toBe(400)
+      expect(((await ghost.json()) as { error: string }).error).toMatch(/does not exist/)
+
+      const badType = await fetch(`${base(server)}/api/comments/delete`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ id: 42 }),
+      })
+      expect(badType.status).toBe(400)
+
+      const notJson = await fetch(`${base(server)}/api/comments/delete`, {
+        method: "POST",
+        headers: auth,
+        body: "not json",
+      })
+      expect(notJson.status).toBe(400)
+    } finally {
+      server.stop()
+    }
+  })
+})
+
 describe("GET /api/events", () => {
   test("streams broadcast events to connected clients", async () => {
     const state = createState({ token: generateReviewerToken(), sessionID: "ses_1", repoPath: repoDir, target: { kind: "worktree" } })

@@ -1,10 +1,10 @@
 import type { AppState } from "../types.ts"
 import type { RouteHandler } from "./http.ts"
 import { sseResponse, broadcast } from "./sse.ts"
-import { addComment, acceptFinding, submitReview, askQuestion, approvePlan, captureConsentedRound } from "./state.ts"
-import { runPlan } from "./plan.ts"
+import { addComment, deleteComment, acceptFinding, submitReview, askQuestion, approvePlan, captureConsentedRound } from "./state.ts"
 import { startFixAndStatus } from "./fix.ts"
 import { runAnalysis } from "./analysis.ts"
+import { startPlanning } from "./plan.ts"
 import type { OpenCodeClient } from "../session/client.ts"
 
 export interface RouteDependencies {
@@ -16,9 +16,13 @@ export interface RouteDependencies {
 // Open-tier state projection (LLD §4): everything the frontend and local agents
 // may read. The reviewer token and the SSE client set are deliberately excluded
 // — the token only ever travels in the reviewer URL.
-export function projectState(state: AppState): unknown {
+export function projectState(state: AppState, options: { sessionLinked?: boolean } = {}): unknown {
   return {
     sessionID: state.sessionID,
+    // whether an OpenCode session client is linked — without it submit stores
+    // the payload but no plan can ever be drafted; the UI says so instead of
+    // showing an eternal "planning" state
+    sessionLinked: options.sessionLinked ?? false,
     repoPath: state.repoPath,
     target: state.target,
     rounds: state.rounds,
@@ -31,12 +35,17 @@ export function projectState(state: AppState): unknown {
 
 export function buildHandlers(state: AppState, deps: RouteDependencies = {}): Record<string, RouteHandler> {
   return {
-    "GET /api/state": () => Response.json(projectState(state)),
+    "GET /api/state": () => Response.json(projectState(state, { sessionLinked: deps.client !== undefined })),
     "GET /api/events": () => sseResponse(state),
     "POST /api/comments": async (req) => {
       const result = addComment(state, await parseJson(req))
       if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
       return Response.json(result.comment)
+    },
+    "POST /api/comments/delete": async (req) => {
+      const result = deleteComment(state, await parseJson(req))
+      if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
+      return Response.json({ deleted: result.id })
     },
     "POST /api/findings/accept": async (req) => {
       const input = await parseJson(req)
@@ -48,20 +57,28 @@ export function buildHandlers(state: AppState, deps: RouteDependencies = {}): Re
       const input = await parseJson(req)
       const result = submitReview(state, input)
       if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
+      // the plan prompt dispatches in the background (like the fix flow) — the
+      // response returns immediately and plan.pending/plan.ready/plan.failed
+      // events carry the progress
+      if (deps.client) startPlanning(state, deps.client)
+      return Response.json({ payload: result.payload, plan: null })
+    },
+    "POST /api/plan/retry": () => {
+      if (state.submission === undefined) {
+        return Response.json({ error: "nothing has been submitted yet" }, { status: 400 })
+      }
+      if (state.submission.plan !== undefined) {
+        return Response.json({ error: "a plan already exists" }, { status: 400 })
+      }
+      if (state.submission.planning) {
+        return Response.json({ error: "a plan is already being drafted" }, { status: 400 })
+      }
       if (!deps.client) {
-        // no linked session — the payload serializes but the plan flow cannot
-        // run; loud degradation rather than a silent skip
-        return Response.json({ payload: result.payload, plan: null })
+        return Response.json({ error: "OpenCode session is not linked" }, { status: 500 })
       }
-      try {
-        const plan = await runPlan(state, deps.client)
-        return Response.json({ payload: result.payload, plan })
-      } catch (err) {
-        return Response.json(
-          { error: err instanceof Error ? err.message : String(err) },
-          { status: 500 },
-        )
-      }
+      state.submission.planError = undefined
+      startPlanning(state, deps.client)
+      return Response.json({ planning: true })
     },
     "POST /api/plan/approve": () => {
       const result = approvePlan(state)

@@ -15,7 +15,9 @@ export const CONTROL_ROUTE_PATHS: readonly string[] = [
   "/api/findings/accept",
   "/api/submit",
   "/api/plan/approve",
+  "/api/plan/retry",
   "/api/rounds",
+  "/api/comments/delete",
 ]
 
 export interface ReviewServerOptions {
