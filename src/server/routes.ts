@@ -1,7 +1,8 @@
 import type { AppState } from "../types.ts"
 import type { RouteHandler } from "./http.ts"
 import { sseResponse, broadcast } from "./sse.ts"
-import { addComment, deleteComment, acceptFinding, submitReview, askQuestion, approvePlan, captureConsentedRound } from "./state.ts"
+import { addComment, deleteComment, acceptFinding, askQuestion, captureConsentedRound } from "./state.ts"
+import { approvePlanVersion, retryPlan, revisePlan, startCycle } from "./submissions.ts"
 import { startFixAndStatus } from "./fix.ts"
 import { runAnalysis } from "./analysis.ts"
 import { startPlanning } from "./plan.ts"
@@ -17,6 +18,8 @@ export interface RouteDependencies {
 // may read. The reviewer token and the SSE client set are deliberately excluded
 // — the token only ever travels in the reviewer URL.
 export function projectState(state: AppState, options: { sessionLinked?: boolean } = {}): unknown {
+  const cycle = state.submissions.at(-1)
+  const plan = cycle?.plans.at(-1)
   return {
     sessionID: state.sessionID,
     // whether an OpenCode session client is linked — without it submit stores
@@ -30,7 +33,14 @@ export function projectState(state: AppState, options: { sessionLinked?: boolean
     analysis: Object.fromEntries(state.analysis),
     analysisStatus: Object.fromEntries(state.analysisStatus),
     acceptedFindings: state.acceptedFindings,
-    submission: state.submission ?? null,
+    submissions: state.submissions,
+    // Transitional convenience projection for the existing action bar. Canonical
+    // history is `submissions`; this never owns mutable authorization state.
+    submission: cycle === undefined ? null : {
+      cycle: cycle.n, version: plan?.n, payload: plan?.payload, planning: plan?.status === "planning", plan: plan?.plan,
+      planApproved: cycle.approvedPlan !== undefined, planError: plan?.error, statuses: cycle.statuses,
+      roundPrompted: cycle.capturedRound !== undefined, stalled: cycle.stalled, statusError: cycle.statusError,
+    },
   }
 }
 
@@ -56,38 +66,37 @@ export function buildHandlers(state: AppState, deps: RouteDependencies = {}): Re
     },
     "POST /api/submit": async (req) => {
       const input = await parseJson(req)
-      const result = submitReview(state, input)
+      const result = startCycle(state, input)
       if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
       // the plan prompt dispatches in the background (like the fix flow) — the
       // response returns immediately and plan.pending/plan.ready/plan.failed
       // events carry the progress
-      if (deps.client) startPlanning(state, deps.client)
-      return Response.json({ payload: result.payload, plan: null })
+      if (deps.client) startPlanning(state, deps.client, result.value.n, 1)
+      return Response.json({ cycle: result.value.n, version: 1, payload: result.value.plans[0]?.payload, plan: null })
     },
-    "POST /api/plan/retry": () => {
-      if (state.submission === undefined) {
-        return Response.json({ error: "nothing has been submitted yet" }, { status: 400 })
-      }
-      if (state.submission.plan !== undefined) {
-        return Response.json({ error: "a plan already exists" }, { status: 400 })
-      }
-      if (state.submission.planning) {
-        return Response.json({ error: "a plan is already being drafted" }, { status: 400 })
-      }
-      if (!deps.client) {
-        return Response.json({ error: "OpenCode session is not linked" }, { status: 500 })
-      }
-      state.submission.planError = undefined
-      startPlanning(state, deps.client)
-      return Response.json({ planning: true })
+    "POST /api/plan/revise": async (req) => {
+      if (!deps.client) return Response.json({ error: "OpenCode session is not linked" }, { status: 500 })
+      const result = revisePlan(state, await parseJson(req))
+      if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
+      const cycle = state.submissions.at(-1)!
+      startPlanning(state, deps.client, cycle.n, result.value.n)
+      return Response.json({ cycle: cycle.n, version: result.value.n })
     },
-    "POST /api/plan/approve": () => {
-      const result = approvePlan(state)
+    "POST /api/plan/retry": async (req) => {
+      const result = retryPlan(state, await parseJson(req))
+      if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
+      if (!deps.client) return Response.json({ error: "OpenCode session is not linked" }, { status: 500 })
+      const cycle = state.submissions.find((item) => item.plans.includes(result.value))!
+      startPlanning(state, deps.client, cycle.n, result.value.n)
+      return Response.json({ cycle: cycle.n, version: result.value.n })
+    },
+    "POST /api/plan/approve": async (req) => {
+      const result = approvePlanVersion(state, await parseJson(req))
       if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
       // the fix run can take minutes — it proceeds in the background and the
       // status card fills via SSE status.ready (LLD §5c-4)
-      if (deps.client) startFixAndStatus(state, deps.client)
-      return Response.json({ approved: true })
+      if (deps.client) startFixAndStatus(state, deps.client, result.value.cycle.n, result.value.plan.n)
+      return Response.json({ approved: true, cycle: result.value.cycle.n, version: result.value.plan.n })
     },
     "POST /api/rounds": async () => {
       const result = await captureConsentedRound(state)

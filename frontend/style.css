@@ -936,6 +936,8 @@ body {
   border-top: 1px solid var(--border-subtle);
 }
 
+.plan-history { overflow-wrap: anywhere; }
+
 @media (max-width: 360px) {
   .action-bar-summary { align-items: flex-start; flex-wrap: wrap; padding-inline: 12px; gap: 8px; }
   .action-bar-right { width: 100%; margin-left: 0; justify-content: flex-start; }

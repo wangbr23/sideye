@@ -16,6 +16,7 @@ export const CONTROL_ROUTE_PATHS: readonly string[] = [
   "/api/submit",
   "/api/plan/approve",
   "/api/plan/retry",
+  "/api/plan/revise",
   "/api/rounds",
   "/api/comments/delete",
 ]

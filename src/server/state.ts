@@ -1,4 +1,4 @@
-import type { AppState, Comment, DiffFile, ReviewTarget, Round, SubmitPayload } from "../types.ts"
+import type { AppState, Comment, DiffFile, ReviewTarget, Round } from "../types.ts"
 import {
   captureCommitDiff,
   captureTrackedDiff,
@@ -7,7 +7,6 @@ import {
 } from "../git/capture.ts"
 import { parseDiff } from "../git/parse.ts"
 import { questionPrompt, renderAnchorContext } from "../session/prompts.ts"
-import { buildLessonCandidates } from "../lesson.ts"
 
 export interface AppStateInit {
   token: string
@@ -27,6 +26,7 @@ export function createState(init: AppStateInit): AppState {
     analysis: new Map(),
     analysisStatus: new Map(),
     acceptedFindings: [],
+    submissions: [],
     sseClients: new Set(),
   }
 }
@@ -234,93 +234,21 @@ export function acceptFinding(state: AppState, input: unknown): AcceptFindingRes
   return { ok: true, accepted: [...state.acceptedFindings] }
 }
 
-// Control-tier submit (LLD §5c): explicit user requests + accepted findings +
-// every comment (all comments reach the agent as work items; lesson-marked
-// ones additionally serialize as LessonCandidates, §7) into the SubmitPayload
-// stored on the state.
-export type SubmitReviewResult = { ok: true; payload: SubmitPayload } | { ok: false; error: string }
-
-export function submitReview(state: AppState, input: unknown): SubmitReviewResult {
-  if (typeof input !== "object" || input === null) {
-    return { ok: false, error: "request body must be a JSON object" }
-  }
-  const requests = (input as Record<string, unknown>).requests
-  if (requests !== undefined && !Array.isArray(requests)) {
-    return { ok: false, error: "requests must be an array of strings" }
-  }
-  for (const text of requests ?? []) {
-    if (typeof text !== "string" || text.trim() === "") {
-      return { ok: false, error: "each request must be a non-empty string" }
-    }
-  }
-  if (state.submission !== undefined) {
-    return { ok: false, error: "a submission already exists for this review" }
-  }
-
-  const payloadRequests: SubmitPayload["requests"] = (requests ?? []).map((text) => ({
-    id: crypto.randomUUID(),
-    text,
-    origin: "user",
-  }))
-  for (const accepted of state.acceptedFindings) {
-    const finding = state.analysis.get(accepted.round)?.findings.find((f) => f.id === accepted.findingId)
-    if (finding === undefined) {
-      return { ok: false, error: `accepted finding ${accepted.findingId} vanished from round ${accepted.round} analysis` }
-    }
-    payloadRequests.push({ id: crypto.randomUUID(), text: finding.claim, origin: "accepted-finding" })
-  }
-  for (const comment of state.comments) {
-    payloadRequests.push({
-      id: comment.id,
-      text: comment.body,
-      origin: "comment",
-      comment: { author: comment.author, anchor: { ...comment.anchor } },
-    })
-  }
-  if (payloadRequests.length === 0) {
-    return {
-      ok: false,
-      error: "nothing to submit — leave comments, accept findings, or type requests in the submit card first",
-    }
-  }
-  const payload: SubmitPayload = { requests: payloadRequests, lessons: buildLessonCandidates(state) }
-  state.submission = { payload }
-  return { ok: true, payload }
-}
-
-// Control-tier plan approval (LLD §5c-3): the second human approval that
-// authorizes the edit prompt (T23). Requires a submission and a plan.
-export type ApprovePlanResult = { ok: true; planApproved: boolean } | { ok: false; error: string }
-
-export function approvePlan(state: AppState): ApprovePlanResult {
-  if (state.submission === undefined) {
-    return { ok: false, error: "nothing has been submitted yet" }
-  }
-  if (state.submission.plan === undefined) {
-    return { ok: false, error: "no plan exists yet" }
-  }
-  if (state.submission.planApproved) {
-    return { ok: false, error: "the plan is already approved" }
-  }
-  state.submission.planApproved = true
-  return { ok: true, planApproved: true }
-}
-
 // Control-tier round capture (LLD §4, §5c-5): consented capture of round N+1,
 // gated on the fix flow having reported (statuses, or a stall — §9 keeps the
 // review usable). One round per status report (`roundPrompted`).
 export type CaptureConsentedResult = { ok: true; round: Round } | { ok: false; error: string }
 
 export async function captureConsentedRound(state: AppState): Promise<CaptureConsentedResult> {
-  const submission = state.submission
-  if (submission === undefined || (submission.statuses === undefined && submission.stalled !== true)) {
+  const submission = state.submissions.at(-1)
+  if (submission === undefined || submission.approvedPlan === undefined || (submission.statuses === undefined && submission.stalled !== true)) {
     return { ok: false, error: "a new round is only offered after the fix flow reports statuses" }
   }
-  if (submission.roundPrompted) {
+  if (submission.capturedRound !== undefined) {
     return { ok: false, error: "a round was already captured for this status report" }
   }
   const round = await captureRound(state)
-  submission.roundPrompted = true
+  submission.capturedRound = round.n
   return { ok: true, round }
 }
 

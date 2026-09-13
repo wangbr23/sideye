@@ -121,7 +121,7 @@ describe("control-tier routes (findings/accept, submit)", () => {
       }
       const payload = submitBody.payload
       expect(payload.requests).toHaveLength(2)
-      expect(payload.requests[1]).toEqual({
+      expect(payload.requests[1]).toMatchObject({
         id: expect.any(String),
         text: "off-by-one in the loop",
         origin: "accepted-finding",
@@ -130,10 +130,10 @@ describe("control-tier routes (findings/accept, submit)", () => {
 
       const projected = (await (await fetch(`${base(server)}/api/state`)).json()) as {
         acceptedFindings: unknown[]
-        submission: { payload: unknown } | null
+        submissions: { plans: { payload: unknown }[] }[]
       }
       expect(projected.acceptedFindings).toEqual([{ round: 1, findingId: "f1" }])
-      expect(projected.submission?.payload).toEqual(payload)
+      expect(projected.submissions[0]?.plans[0]?.payload).toEqual(payload)
     } finally {
       server.stop()
     }

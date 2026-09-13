@@ -13,6 +13,11 @@ const validPlan = {
   perRequest: [{ requestId: "r1", approach: "Split the loop and add a test.", affectedFiles: ["a.txt"] }],
 }
 
+function planFromPrompt(body: { parts: { text: string }[] }) {
+  const text = body.parts.map((part) => part.text).join("\n")
+  return response({ structured: { perRequest: [...text.matchAll(/--- request ([^ ]+) /g)].map((match) => ({ requestId: match[1]!, approach: "Split the loop and add a test.", affectedFiles: ["a.txt"] })) } })
+}
+
 function response(overrides: { id?: string; structured?: unknown; error?: { name: string } } = {}) {
   const id = overrides.id ?? "msg_1"
   return {
@@ -21,7 +26,7 @@ function response(overrides: { id?: string; structured?: unknown; error?: { name
   }
 }
 
-async function stubOpencode(responses: unknown[], options: { partUpdateStatus?: number } = {}) {
+async function stubOpencode(responses: (unknown | ((body: { parts: { text: string }[] }) => unknown))[], options: { partUpdateStatus?: number } = {}) {
   const prompts: string[] = []
   const partUpdates: { path: string; body: Record<string, unknown> }[] = []
   const server = Bun.serve({
@@ -41,7 +46,8 @@ async function stubOpencode(responses: unknown[], options: { partUpdateStatus?: 
       }
       const body = (await req.json()) as { parts: { text: string }[] }
       prompts.push(body.parts.map((p) => p.text).join("\n"))
-      return Response.json(responses.shift() ?? { info: {}, parts: [] })
+      const next = responses.shift()
+      return Response.json(typeof next === "function" ? next(body) : next ?? { info: {}, parts: [] })
     },
   })
   const client = await createSessionClient({ baseUrl: `http://127.0.0.1:${server.port}`, healthTimeoutMs: 1000 })
@@ -120,7 +126,7 @@ describe("plan flow", () => {
   })
 
   test("submit returns immediately and dispatches the plan in the background", async () => {
-    const stub = await stubOpencode([response({ structured: validPlan })])
+    const stub = await stubOpencode([planFromPrompt])
     const state = stateForSubmit()
     state.comments.push({
       id: "r1",
@@ -155,16 +161,15 @@ describe("plan flow", () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as { payload: unknown; plan: Plan | null }
     expect(body.plan).toBeNull() // plan arrives via SSE, not in the response
-    expect(body.payload).toEqual(state.submission?.payload)
+    expect(body.payload).toEqual(state.submissions[0]?.plans[0]?.payload)
 
     const chunk = await waitForSse(reader, "plan.ready")
     expect(chunk).toContain("event: plan.pending")
     expect(chunk).toContain("event: plan.ready")
     reader.releaseLock()
 
-    await waitUntil(() => state.submission?.planning === false)
-    expect(state.submission?.plan).toEqual(validPlan)
-    expect(state.submission?.planning).toBe(false)
+    await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready")
+    expect(state.submissions[0]?.plans[0]?.plan?.perRequest).toHaveLength(3)
     expect(stub.prompts).toHaveLength(1)
     expect(stub.prompts[0]).toContain("sideye: code review fix plan")
     expect(stub.prompts[0]).toContain("split the loop")
@@ -189,7 +194,7 @@ describe("plan flow", () => {
   test("a TUI mirror failure does not invalidate the browser plan", async () => {
     const warn = spyOn(console, "warn").mockImplementation(() => {})
     try {
-      const stub = await stubOpencode([response({ structured: validPlan })], { partUpdateStatus: 500 })
+      const stub = await stubOpencode([planFromPrompt], { partUpdateStatus: 500 })
       const state = stateForSubmit()
       const server = await startWithClient(state, stub.client)
       const base = `http://127.0.0.1:${server.port}`
@@ -201,9 +206,8 @@ describe("plan flow", () => {
       })
 
       expect(res.status).toBe(200)
-      await waitUntil(() => state.submission?.planning === false)
-      expect(state.submission?.plan).toEqual(validPlan)
-      expect(state.submission?.planError).toBeUndefined()
+      await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready")
+      expect(state.submissions[0]?.plans[0]?.error).toBeUndefined()
       expect(stub.partUpdates).toHaveLength(1)
       expect(warn).toHaveBeenCalledTimes(1)
     } finally {
@@ -215,7 +219,7 @@ describe("plan flow", () => {
     const bad = { perRequest: [{ requestId: 42, approach: "x", affectedFiles: [] }] }
     const stub = await stubOpencode([
       response({ id: "msg_bad", structured: bad }),
-      response({ id: "msg_repaired", structured: validPlan }),
+      planFromPrompt,
     ])
     const state = stateForSubmit()
     const server = await startWithClient(state, stub.client)
@@ -227,11 +231,10 @@ describe("plan flow", () => {
       body: JSON.stringify({ requests: ["split the loop"] }),
     })
 
-    await waitUntil(() => state.submission?.planning === false)
-    expect(state.submission?.plan).toEqual(validPlan)
+    await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready")
     expect(stub.prompts).toHaveLength(2)
     expect(stub.partUpdates).toHaveLength(1)
-    expect(stub.partUpdates[0]?.path).toContain("/message/msg_repaired/part/")
+    expect(stub.partUpdates[0]?.path).toContain("/message/msg_1/part/")
   })
 
   test("invalid plan output retries once, then fails loudly with a stored planError", async () => {
@@ -262,10 +265,10 @@ describe("plan flow", () => {
     reader.releaseLock()
     expect(stub.prompts).toHaveLength(2)
     expect(stub.prompts[1]).toMatch(/failed validation/)
-    expect(state.submission?.plan).toBeUndefined()
-    expect(state.submission?.planning).toBe(false)
-    expect(state.submission?.planError).toMatch(/invalid output twice/)
-    expect(state.submission?.payload.requests).toHaveLength(2) // payload kept
+    expect(state.submissions[0]?.plans[0]?.plan).toBeUndefined()
+    expect(state.submissions[0]?.plans[0]?.status).toBe("failed")
+    expect(state.submissions[0]?.plans[0]?.error).toMatch(/invalid output twice/)
+    expect(state.submissions[0]?.plans[0]?.payload.requests).toHaveLength(2) // payload kept
   })
 
   test("plan retry re-dispatches after a failure and stores the plan", async () => {
@@ -273,7 +276,7 @@ describe("plan flow", () => {
     const stub = await stubOpencode([
       response({ structured: bad }),
       response({ structured: bad }),
-      response({ structured: validPlan }),
+      planFromPrompt,
     ])
     const state = stateForSubmit()
     const server = await startWithClient(state, stub.client)
@@ -289,33 +292,32 @@ describe("plan flow", () => {
       headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
       body: JSON.stringify({ requests: ["split the loop"] }),
     })
-    await waitUntil(() => state.submission?.planError !== undefined)
+    await waitUntil(() => state.submissions[0]?.plans[0]?.status === "failed")
 
     const retry = await fetch(`${base}/api/plan/retry`, {
       method: "POST",
-      headers: { authorization: `Bearer ${state.token}` },
+      headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" }, body: JSON.stringify({ cycle: 1, version: 1 }),
     })
     expect(retry.status).toBe(200)
-    await waitUntil(() => state.submission?.plan !== undefined)
-    expect(state.submission?.plan).toEqual(validPlan)
-    expect(state.submission?.planError).toBeUndefined()
+    await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready")
+    expect(state.submissions[0]?.plans[0]?.error).toBeUndefined()
     expect(stub.prompts).toHaveLength(3)
   })
 
   test("plan retry is guarded: needs a submission and rejects when a plan exists", async () => {
-    const stub = await stubOpencode([response({ structured: validPlan })])
+    const stub = await stubOpencode([planFromPrompt])
     const state = stateForSubmit()
     const server = await startWithClient(state, stub.client)
     const base = `http://127.0.0.1:${server.port}`
     const retry = () =>
       fetch(`${base}/api/plan/retry`, {
         method: "POST",
-        headers: { authorization: `Bearer ${state.token}` },
+        headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" }, body: JSON.stringify({ cycle: 1, version: 1 }),
       })
 
     const beforeSubmit = await retry()
     expect(beforeSubmit.status).toBe(400)
-    expect(((await beforeSubmit.json()) as { error: string }).error).toMatch(/nothing has been submitted/)
+    expect(((await beforeSubmit.json()) as { error: string }).error).toMatch(/does not exist/)
 
     await fetch(`${base}/api/findings/accept`, {
       method: "POST",
@@ -327,26 +329,26 @@ describe("plan flow", () => {
       headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
       body: JSON.stringify({ requests: ["split the loop"] }),
     })
-    await waitUntil(() => state.submission?.plan !== undefined)
+    await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready")
 
     const afterPlan = await retry()
     expect(afterPlan.status).toBe(400)
-    expect(((await afterPlan.json()) as { error: string }).error).toMatch(/already exists/)
+    expect(((await afterPlan.json()) as { error: string }).error).toMatch(/only a failed/)
   })
 
   test("plan approval route: requires submission and plan, sets the flag once", async () => {
-    const stub = await stubOpencode([response({ structured: validPlan })])
+    const stub = await stubOpencode([planFromPrompt])
     const state = stateForSubmit()
     const server = await startWithClient(state, stub.client)
     const approve = () =>
       fetch(`http://127.0.0.1:${server.port}/api/plan/approve`, {
         method: "POST",
-        headers: { authorization: `Bearer ${state.token}` },
+        headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" }, body: JSON.stringify({ cycle: 1, version: 1 }),
       })
 
     const beforeSubmit = await approve()
     expect(beforeSubmit.status).toBe(400)
-    expect(((await beforeSubmit.json()) as { error: string }).error).toMatch(/nothing has been submitted/)
+    expect(((await beforeSubmit.json()) as { error: string }).error).toMatch(/does not exist/)
 
     await fetch(`http://127.0.0.1:${server.port}/api/findings/accept`, {
       method: "POST",
@@ -358,15 +360,15 @@ describe("plan flow", () => {
       headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
       body: JSON.stringify({ requests: ["split the loop"] }),
     })
-    await waitUntil(() => state.submission?.plan !== undefined) // approval requires the plan
+    await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready") // approval requires the plan
     const first = await approve()
     expect(first.status).toBe(200)
-    expect(await first.json()).toEqual({ approved: true })
-    expect(state.submission?.planApproved).toBe(true)
+    expect(await first.json()).toEqual({ approved: true, cycle: 1, version: 1 })
+    expect(state.submissions[0]?.approvedPlan).toBe(1)
 
     const again = await approve()
     expect(again.status).toBe(400)
-    expect(((await again.json()) as { error: string }).error).toMatch(/already approved/)
+    expect(((await again.json()) as { error: string }).error).toMatch(/stale/)
   })
 
   test("submit without a linked client serializes the payload with plan null", async () => {

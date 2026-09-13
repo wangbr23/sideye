@@ -3,12 +3,15 @@ import type { OpenCodeClient } from "../session/client.ts"
 import { fixJsonSchema, fixOutputSchema, type FixOutput } from "../session/schemas.ts"
 import { fixPrompt } from "../session/prompts.ts"
 import { broadcast } from "./sse.ts"
+import { activeApprovedCycle } from "./submissions.ts"
 
 export const FIX_STALL_TIMEOUT_MS = 10 * 60 * 1000
 
 export interface FixOptions {
   // overrides the 10-minute stall budget (tests)
   stallTimeoutMs?: number
+  cycleN?: number
+  versionN?: number
 }
 
 // Fix + status flow (LLD §5c-3/4, §9): the fix prompt authorizes editing and
@@ -18,29 +21,29 @@ export interface FixOptions {
 // timeout that marks the session unresponsive while the review stays usable.
 // Called fire-and-forget by the approve route — failures are contained here
 // and surfaced via state + status.ready, never thrown into the void.
-export function startFixAndStatus(state: AppState, client: OpenCodeClient): void {
-  void runFixAndStatus(state, client).catch((err) => {
-    if (state.submission !== undefined) {
-      state.submission.statusError = err instanceof Error ? err.message : String(err)
-    }
-    broadcast(state, "status.ready", { error: state.submission?.statusError })
+export function startFixAndStatus(state: AppState, client: OpenCodeClient, cycleN: number, versionN: number): void {
+  void runFixAndStatus(state, client, { cycleN, versionN }).catch((err) => {
+    const cycle = state.submissions.find((item) => item.n === cycleN)
+    if (cycle) cycle.statusError = err instanceof Error ? err.message : String(err)
+    broadcast(state, "status.ready", { cycle: cycleN, version: versionN, error: cycle?.statusError })
   })
 }
 
 export async function runFixAndStatus(state: AppState, client: OpenCodeClient, options: FixOptions = {}): Promise<void> {
-  const submission = state.submission
-  if (submission === undefined || submission.plan === undefined || !submission.planApproved) {
+  const approved = activeApprovedCycle(state)
+  if (!approved || (options.cycleN !== undefined && (approved.cycle.n !== options.cycleN || approved.plan.n !== options.versionN))) {
     throw new Error("fix flow requires an approved plan")
   }
   const prompt = fixPrompt({
-    requests: submission.payload.requests.map((request) => ({
+    requests: approved.plan.payload.requests.map((request) => ({
       id: request.id,
       text: request.text,
       origin: request.origin,
       comment: request.comment,
     })),
-    plan: submission.plan,
-    lessons: submission.payload.lessons.map((lesson) => ({
+    plan: approved.plan.plan!,
+    feedback: approved.plan.feedback,
+    lessons: approved.plan.payload.lessons.map((lesson) => ({
       excerpt: lesson.excerpt,
       provenance: {
         round: lesson.provenance.round,
@@ -60,8 +63,8 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
     })
     const wentIdle = await waitForIdle(events, state.sessionID, stallTimeoutMs)
     if (!wentIdle) {
-      submission.stalled = true
-      broadcast(state, "status.ready", { stalled: true })
+      approved.cycle.stalled = true
+      broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, stalled: true })
       return
     }
     const report = await latestStructured(client, state.sessionID)
@@ -78,15 +81,15 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
     })
     const wentIdleAgain = await waitForIdle(events, state.sessionID, stallTimeoutMs)
     if (!wentIdleAgain) {
-      submission.stalled = true
-      broadcast(state, "status.ready", { stalled: true })
+      approved.cycle.stalled = true
+      broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, stalled: true })
       return
     }
     const repaired = await latestStructured(client, state.sessionID)
     const reparsed = parseFix(repaired)
     if (!("data" in reparsed)) {
-      submission.statusError = `status report failed validation twice: ${reparsed.issues}`
-      broadcast(state, "status.ready", { error: submission.statusError })
+      approved.cycle.statusError = `status report failed validation twice: ${reparsed.issues}`
+      broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, error: approved.cycle.statusError })
       return
     }
     storeStatuses(state, reparsed.data)
@@ -97,8 +100,11 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
 
 function storeStatuses(state: AppState, output: FixOutput): void {
   const statuses: RequestStatus[] = output.statuses
-  if (state.submission !== undefined) state.submission.statuses = statuses
-  broadcast(state, "status.ready", { statuses })
+  const approved = activeApprovedCycle(state)
+  if (approved) {
+    approved.cycle.statuses = statuses
+    broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, statuses })
+  }
 }
 
 function parseFix(info: { structured?: unknown; error?: { name?: string } }): { data: FixOutput } | { issues: string } {

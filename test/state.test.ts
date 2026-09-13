@@ -3,7 +3,8 @@ import { $ } from "bun"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createState, captureRound, addComment, deleteComment, acceptFinding, submitReview } from "../src/server/state.ts"
+import { createState, captureRound, addComment, deleteComment, acceptFinding } from "../src/server/state.ts"
+import { startCycle } from "../src/server/submissions.ts"
 import type { ReviewTarget } from "../src/types.ts"
 
 let repoDir: string
@@ -41,7 +42,7 @@ describe("AppState store", () => {
     expect(state.analysis.size).toBe(0)
     expect(state.analysisStatus.size).toBe(0)
     expect(state.sseClients.size).toBe(0)
-    expect(state.submission).toBeUndefined()
+    expect(state.submissions).toEqual([])
   })
 
   test("round assembly merges tracked and untracked files into a frozen round", async () => {
@@ -309,19 +310,20 @@ describe("acceptFinding and submitReview", () => {
     const state = stateWithAnalysis()
     acceptFinding(state, { round: 1, findingId: "f1" })
 
-    const result = submitReview(state, { requests: ["split the loop", "add a test"] })
+    const result = startCycle(state, { requests: ["split the loop", "add a test"] })
     if (!result.ok) throw new Error(`expected ok, got: ${result.error}`)
-    expect(result.payload.requests).toHaveLength(3)
-    const [first, second, third] = result.payload.requests
+    const payload = result.value.plans[0]!.payload
+    expect(payload.requests).toHaveLength(3)
+    const [first, second, third] = payload.requests
     expect(first).toMatchObject({ text: "split the loop", origin: "user" })
     expect(second).toMatchObject({ text: "add a test", origin: "user" })
     expect(third).toMatchObject({ text: "off-by-one in the loop", origin: "accepted-finding" })
     expect(first?.id).toBeTruthy()
     expect(first?.id).not.toBe(second?.id)
-    expect(result.payload.lessons).toEqual([])
-    expect(state.submission?.payload).toEqual(result.payload)
+    expect(payload.lessons).toEqual([])
+    expect(state.submissions[0]?.plans[0]?.payload).toEqual(payload)
 
-    const again = submitReview(state, { requests: [] })
+    const again = startCycle(state, { requests: [] })
     expect(again.ok).toBe(false)
     if (!again.ok) expect(again.error).toMatch(/already exists/)
   })
@@ -334,9 +336,9 @@ describe("acceptFinding and submitReview", () => {
       { requests: [42] },
       { requests: ["ok", "   "] },
     ]) {
-      expect(submitReview(state, input).ok).toBe(false)
+      expect(startCycle(state, input).ok).toBe(false)
     }
-    expect(state.submission).toBeUndefined()
+    expect(state.submissions).toEqual([])
   })
 
   test("submit joins every comment as a comment-origin request with a snapshot", async () => {
@@ -358,9 +360,9 @@ describe("acceptFinding and submitReview", () => {
     })
     if (!bot.ok) throw new Error(`expected ok, got: ${bot.error}`)
 
-    const result = submitReview(state, {})
+    const result = startCycle(state, {})
     if (!result.ok) throw new Error(`expected ok, got: ${result.error}`)
-    const [first, second] = result.payload.requests
+    const [first, second] = result.value.plans[0]!.payload.requests
     expect(first).toEqual({
       id: human.comment.id,
       text: "why is this a loop?",
@@ -377,9 +379,9 @@ describe("acceptFinding and submitReview", () => {
 
   test("submit is rejected when there is nothing to send", () => {
     const state = stateWithAnalysis()
-    const result = submitReview(state, {})
+    const result = startCycle(state, {})
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toMatch(/nothing to submit/)
-    expect(state.submission).toBeUndefined()
+    expect(state.submissions).toEqual([])
   })
 })

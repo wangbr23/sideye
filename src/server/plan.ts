@@ -1,4 +1,4 @@
-import type { AppState, Plan } from "../types.ts"
+import type { AppState, Plan, PlanVersion } from "../types.ts"
 import type { OpenCodeClient } from "../session/client.ts"
 import { planJsonSchema, planOutputSchema, type PlanOutput } from "../session/schemas.ts"
 import { planPrompt } from "../session/prompts.ts"
@@ -13,66 +13,72 @@ import { broadcast } from "./sse.ts"
 // analysis pattern: one repair retry with the issues appended, then a loud
 // failure stored on the submission (retryable via POST /api/plan/retry) — the
 // plan is load-bearing for the fix flow and has no designed fallback surface.
-export function startPlanning(state: AppState, client: OpenCodeClient): void {
-  const submission = state.submission
-  if (submission === undefined || submission.plan !== undefined || submission.planning) return
-  submission.planning = true
-  broadcast(state, "plan.pending", {})
-  void runPlan(state, client)
-    .then(() => {
-      if (state.submission !== undefined) state.submission.planning = false
-    })
+export function startPlanning(state: AppState, client: OpenCodeClient, cycleN: number, versionN: number): void {
+  const version = getVersion(state, cycleN, versionN)
+  if (!version || version.status !== "planning") return
+  broadcast(state, "plan.pending", { cycle: cycleN, version: versionN })
+  void runPlan(state, client, cycleN, versionN)
     .catch((err) => {
-      if (state.submission !== undefined) {
-        state.submission.planning = false
-        state.submission.planError = err instanceof Error ? err.message : String(err)
-      }
-      broadcast(state, "plan.failed", { error: state.submission?.planError })
+      if (version.status === "planning") { version.status = "failed"; version.error = err instanceof Error ? err.message : String(err) }
+      broadcast(state, "plan.failed", { cycle: cycleN, version: versionN, error: version.error })
     })
 }
 
-export async function runPlan(state: AppState, client: OpenCodeClient): Promise<Plan> {
-  const submission = state.submission
-  if (submission === undefined) throw new Error("plan prompt requires a submission")
-  if (submission.plan !== undefined) return submission.plan
+export async function runPlan(state: AppState, client: OpenCodeClient, cycleN: number, versionN: number): Promise<Plan> {
+  const version = getVersion(state, cycleN, versionN)
+  if (!version) throw new Error("plan version does not exist")
+  if (version.plan !== undefined) return version.plan
 
-  const requests = submission.payload.requests.map((request) => ({
+  const requests = version.payload.requests.map((request) => ({
     id: request.id,
     text: request.text,
     origin: request.origin,
     comment: request.comment,
   }))
 
-  const prompt = planPrompt(requests)
+  const previous = state.submissions.find((cycle) => cycle.n === cycleN)?.plans.filter((item) => item.n < versionN && item.status === "ready").at(-1)?.plan
+  const prompt = planPrompt(requests, previous, version.feedback)
   const first = await promptPlan(state, client, prompt)
   const parsed = parsePlan(first.info)
-  if (!("data" in parsed)) {
+  const firstIssues = "data" in parsed ? coverageIssues(version, parsed.data) : parsed.issues
+  if (firstIssues !== undefined) {
     const retry = await promptPlan(
       state,
       client,
-      `${prompt}\n\nYour previous reply failed validation (${parsed.issues}). Reply again with corrected JSON matching the schema.`,
+      `${prompt}\n\nYour previous reply failed validation (${firstIssues}). Reply again with corrected JSON matching the schema.`,
     )
     const reparsed = parsePlan(retry.info)
-    if (!("data" in reparsed)) {
-      throw new Error(`plan prompt produced invalid output twice: ${reparsed.issues}`)
+    const retryIssues = "data" in reparsed ? coverageIssues(version, reparsed.data) : reparsed.issues
+    if (retryIssues !== undefined) {
+      throw new Error(`plan prompt produced invalid output twice: ${retryIssues}`)
     }
-    const plan = storePlan(state, reparsed.data)
-    await mirrorPlanToTui(state, client, retry.info.id, plan)
+    if (!("data" in reparsed)) throw new Error("unreachable invalid repaired plan")
+    const plan = storePlan(state, version, reparsed.data, cycleN)
+    await mirrorPlanToTui(state, client, retry.info.id, plan, version)
     return plan
   }
-  const plan = storePlan(state, parsed.data)
-  await mirrorPlanToTui(state, client, first.info.id, plan)
+  if (!("data" in parsed)) throw new Error("unreachable invalid plan")
+  const plan = storePlan(state, version, parsed.data, cycleN)
+  await mirrorPlanToTui(state, client, first.info.id, plan, version)
   return plan
 }
 
-function storePlan(state: AppState, output: PlanOutput): Plan {
+function storePlan(state: AppState, version: PlanVersion, output: PlanOutput, cycle: number): Plan {
   const plan: Plan = { perRequest: output.perRequest }
-  if (state.submission !== undefined) state.submission.plan = plan
-  broadcast(state, "plan.ready", { plan })
+  version.plan = plan; version.status = "ready"
+  broadcast(state, "plan.ready", { cycle, version: version.n, plan })
   return plan
 }
 
-async function mirrorPlanToTui(state: AppState, client: OpenCodeClient, messageID: string, plan: Plan): Promise<void> {
+function coverageIssues(version: PlanVersion, output: PlanOutput): string | undefined {
+  const expected = new Set(version.payload.requests.map((request) => request.id))
+  const actual = output.perRequest.map((entry) => entry.requestId)
+  return actual.length !== expected.size || new Set(actual).size !== actual.length || actual.some((id) => !expected.has(id))
+    ? "plan must contain exactly one item for every request id"
+    : undefined
+}
+
+async function mirrorPlanToTui(state: AppState, client: OpenCodeClient, messageID: string, plan: Plan, version: PlanVersion): Promise<void> {
   const partID = `prt_sideye_plan_${crypto.randomUUID().replaceAll("-", "")}`
   const now = Date.now()
   try {
@@ -85,7 +91,7 @@ async function mirrorPlanToTui(state: AppState, client: OpenCodeClient, messageI
         sessionID: state.sessionID,
         messageID,
         type: "text",
-        text: renderPlanMarkdown(state, plan),
+        text: renderPlanMarkdown(version, plan),
         time: { start: now, end: now },
         metadata: { source: "sideye", kind: "plan" },
       },
@@ -98,8 +104,8 @@ async function mirrorPlanToTui(state: AppState, client: OpenCodeClient, messageI
   }
 }
 
-function renderPlanMarkdown(state: AppState, plan: Plan): string {
-  const requests = new Map(state.submission?.payload.requests.map((request) => [request.id, request]) ?? [])
+function renderPlanMarkdown(version: PlanVersion, plan: Plan): string {
+  const requests = new Map(version.payload.requests.map((request) => [request.id, request]))
   const sections = plan.perRequest.flatMap((entry, index) => {
     const request = requests.get(entry.requestId)
     let source = "user request"
@@ -130,7 +136,11 @@ function renderPlanMarkdown(state: AppState, plan: Plan): string {
       "",
     ]
   })
-  return ["# Sideye fix plan", "", ...sections].join("\n").trim()
+  return [`# Sideye fix plan v${version.n}`, "", ...sections].join("\n").trim()
+}
+
+function getVersion(state: AppState, cycleN: number, versionN: number): PlanVersion | undefined {
+  return state.submissions.find((cycle) => cycle.n === cycleN)?.plans.find((version) => version.n === versionN)
 }
 
 function parsePlan(info: { structured?: unknown; error?: { name?: string } }): { data: PlanOutput } | { issues: string } {

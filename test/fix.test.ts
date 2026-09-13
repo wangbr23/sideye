@@ -90,7 +90,7 @@ function stateReadyToFix() {
     lessons: [],
   }
   const plan: Plan = { perRequest: [{ requestId: "r1", approach: "split it", affectedFiles: ["a.txt"] }] }
-  state.submission = { payload, plan }
+  state.submissions.push({ n: 1, round: 1, plans: [{ n: 1, payload, feedback: [], status: "ready", plan, createdAt: "now" }] })
   return state
 }
 
@@ -132,10 +132,11 @@ describe("fix + status flow", () => {
 
     const approve = await fetch(`${base}/api/plan/approve`, {
       method: "POST",
-      headers: { authorization: `Bearer ${state.token}` },
+      headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ cycle: 1, version: 1 }),
     })
     expect(approve.status).toBe(200)
-    expect(state.submission?.planApproved).toBe(true)
+    expect(state.submissions[0]?.approvedPlan).toBe(1)
 
     const chunk = await (async () => {
       const deadline = Date.now() + 5000
@@ -157,19 +158,19 @@ describe("fix + status flow", () => {
     expect(stub.prompts[0]).toContain("split the loop")
     expect(stub.prompts[0]).toContain("planned approach: split it")
     expect(stub.prompts[0]).toContain("AGENTS.md")
-    expect(state.submission?.statuses).toEqual(validStatuses.statuses)
-    expect(state.submission?.stalled).toBeUndefined()
+    expect(state.submissions[0]?.statuses).toEqual(validStatuses.statuses)
+    expect(state.submissions[0]?.stalled).toBeUndefined()
   })
 
   test("idle events for other sessions are ignored", async () => {
     const stub = await stubOpencode({ structured: validStatuses, idleFor: "ses_other", idleDelayMs: 100 })
     const state = stateReadyToFix()
     const { runFixAndStatus } = await import("../src/server/fix.ts")
-    state.submission!.planApproved = true
+    state.submissions[0]!.approvedPlan = 1
     await runFixAndStatus(state, stub.client, { stallTimeoutMs: 500 })
     // the foreign idle must not resolve the wait — the short stall budget fires
-    expect(state.submission?.statuses).toBeUndefined()
-    expect(state.submission?.stalled).toBe(true)
+    expect(state.submissions[0]?.statuses).toBeUndefined()
+    expect(state.submissions[0]?.stalled).toBe(true)
   })
 
   test("stall timeout marks the session unresponsive and keeps the review usable", async () => {
@@ -177,12 +178,12 @@ describe("fix + status flow", () => {
     const state = stateReadyToFix()
     await startWithClient(state, stub.client)
     const { runFixAndStatus } = await import("../src/server/fix.ts")
-    state.submission!.planApproved = true
+    state.submissions[0]!.approvedPlan = 1
     const started = Date.now()
     await runFixAndStatus(state, stub.client, { stallTimeoutMs: 300 })
     expect(Date.now() - started).toBeLessThan(5000)
-    expect(state.submission?.statuses).toBeUndefined()
-    expect(state.submission?.stalled).toBe(true)
+    expect(state.submissions[0]?.statuses).toBeUndefined()
+    expect(state.submissions[0]?.stalled).toBe(true)
   })
 
   test("report failing validation twice records a status error", async () => {
@@ -190,10 +191,11 @@ describe("fix + status flow", () => {
     const stub = await stubOpencode({ structured: bad })
     const state = stateReadyToFix()
     const { runFixAndStatus } = await import("../src/server/fix.ts")
-    state.submission!.planApproved = true
+    state.submissions[0]!.approvedPlan = 1
     await runFixAndStatus(state, stub.client, { stallTimeoutMs: 1000 })
-    expect(state.submission?.statuses).toBeUndefined()
-    expect(state.submission?.statusError).toMatch(/failed validation twice/)
-    expect(state.submission?.stalled).toBeUndefined()
+    expect(state.submissions[0]?.statuses).toBeUndefined()
+    expect(state.submissions[0]?.statusError).toMatch(/failed validation twice/)
+    expect(state.submissions[0]?.stalled).toBeUndefined()
   })
+
 })

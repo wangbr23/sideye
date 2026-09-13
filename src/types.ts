@@ -81,7 +81,11 @@ export interface AnalysisResult {
 }
 
 export interface SubmitPayload {
-  requests: {
+  requests: WorkRequest[]
+  lessons: LessonCandidate[]
+}
+
+export interface WorkRequest {
     id: string
     text: string
     origin: "user" | "accepted-finding" | "comment"
@@ -89,10 +93,8 @@ export interface SubmitPayload {
     // the payload is the immutable work order, so deleting the comment later
     // never changes what the agent sees. id === comment.id for traceability.
     comment?: { author: string; anchor: Comment["anchor"] }
-  }[]
-  lessons: LessonCandidate[]
+    finding?: { round: number; findingId: string }
 }
-
 export interface LessonCandidate {
   commentId: string
   excerpt: string // comment body, truncated
@@ -109,6 +111,27 @@ export interface LessonCandidate {
 
 export interface Plan {
   perRequest: { requestId: string; approach: string; affectedFiles: string[] }[]
+}
+
+export interface PlanVersion {
+  n: number
+  payload: SubmitPayload
+  feedback: string[]
+  status: "planning" | "ready" | "failed"
+  plan?: Plan
+  error?: string
+  createdAt: string
+}
+
+export interface SubmissionCycle {
+  n: number
+  round: number
+  plans: PlanVersion[]
+  approvedPlan?: number
+  statuses?: RequestStatus[]
+  capturedRound?: number
+  stalled?: boolean
+  statusError?: string
 }
 
 export interface RequestStatus {
@@ -128,21 +151,7 @@ export interface AppState {
   analysis: Map<number, AnalysisResult> // by round
   analysisStatus: Map<number, "pending" | "failed"> // absent once analysis completes
   acceptedFindings: { round: number; findingId: string }[] // marked pre-submit, serialized on submit
-  submission?: {
-    payload: SubmitPayload
-    // plan prompt dispatched, reply not in yet (background like the fix flow)
-    planning?: boolean
-    plan?: Plan
-    planApproved?: boolean
-    // background plan prompt failed (validation or transport) — retryable
-    planError?: string
-    statuses?: RequestStatus[]
-    roundPrompted?: boolean
-    // fix-flow failure modes (LLD §9): the session never went idle within the
-    // stall budget, or its final structured report never validated
-    stalled?: boolean
-    statusError?: string
-  }
+  submissions: SubmissionCycle[] // immutable plan candidates, grouped by frozen round
   // connected SSE client stream controllers (server pushes events into these)
   sseClients: Set<ReadableStreamDefaultController<Uint8Array>>
 }

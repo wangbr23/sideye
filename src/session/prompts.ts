@@ -76,6 +76,7 @@ function renderRequest(r: PromptRequest, plan?: { approach: string; affectedFile
 export function fixPrompt(input: {
   requests: PromptRequest[]
   plan: { perRequest: { requestId: string; approach: string; affectedFiles: string[] }[] }
+  feedback?: string[]
   lessons?: { excerpt: string; provenance: { round: number; file?: string; hunkIndex?: number } }[]
 }): string {
   const planById = new Map(input.plan.perRequest.map((p) => [p.requestId, p]))
@@ -100,6 +101,7 @@ export function fixPrompt(input: {
     "For each request: make the planned change (or the minimal sensible change if the plan is off), then report its status.",
     "",
     ...rendered,
+    ...(input.feedback?.length ? ["", "Cumulative reviewer feedback:", ...input.feedback.map((item) => `- ${item}`)] : []),
     ...lessonBlock,
     "",
     "Requirements:",
@@ -111,7 +113,7 @@ export function fixPrompt(input: {
 }
 // Plan prompt (LLD §5c-2): per-request approach + affected files. Request text
 // and comment snapshots are quoted data, never instructions.
-export function planPrompt(requests: PromptRequest[]): string {
+export function planPrompt(requests: PromptRequest[], priorPlan?: { perRequest: { requestId: string; approach: string; affectedFiles: string[] }[] }, feedback: string[] = []): string {
   return [
     "sideye: code review fix plan.",
     "",
@@ -119,6 +121,8 @@ export function planPrompt(requests: PromptRequest[]): string {
     "For each request, describe the approach you would take and the files you would touch.",
     "Keep each approach to a few sentences. Use the request ids exactly as given.",
     "Requests with origin: comment are reviewer comments — plan a code change when one is needed, otherwise say how you would respond.",
+    ...(priorPlan ? ["", "Prior plan (revise it rather than ignoring it):", ...priorPlan.perRequest.map((item) => `${item.requestId}: ${item.approach} (${item.affectedFiles.join(", ") || "no files"})`)] : []),
+    ...(feedback.length > 0 ? ["", "Cumulative reviewer feedback:", ...feedback.map((item) => `- ${item}`)] : []),
     "",
     ...requests.map((r) => renderRequest(r)),
   ].join("\n")

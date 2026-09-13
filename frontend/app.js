@@ -83,7 +83,7 @@ function renderRoundSelector() {
 function syncSubmitButton() {
   const button = document.getElementById("submit-review")
   if (!button) return
-  const submitted = (reviewState?.submission ?? null) !== null
+  const submitted = reviewState?.submissions?.some((cycle) => cycle.round === reviewState.rounds.at(-1)?.n) ?? false
   button.disabled = submitInFlight || submitted
   button.textContent = submitInFlight ? "Submitting…" : submitted ? "Submitted" : "Submit"
 }
@@ -657,7 +657,7 @@ function renderActionBar() {
   const drawerEl = document.getElementById("action-drawer")
   const submission = reviewState.submission
 
-  if (submission === null) {
+  if (submission === null || submission.roundPrompted) {
     renderSubmitBar(bar, summaryEl, drawerEl)
     return
   }
@@ -745,6 +745,7 @@ function renderSubmitBar(bar, summaryEl, drawerEl) {
     await refresh()
   })
   content.append(textarea, submitBtn)
+  if (reviewState.submissions?.length > 0) content.append(renderCycleHistory())
   if (submitError !== null) content.append(el("p", "error-note", submitError))
 
   drawerEl.className = `action-drawer${drawerOpen ? " open" : ""}`
@@ -781,7 +782,8 @@ function renderPlanErrorBar(summaryEl, drawerEl, submission) {
     try {
       const res = await fetch("/api/plan/retry", {
         method: "POST",
-        headers: { authorization: `Bearer ${reviewerToken()}` },
+      headers: { "content-type": "application/json", authorization: `Bearer ${reviewerToken()}` },
+      body: JSON.stringify({ cycle: submission.cycle, version: submission.version }),
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
@@ -796,6 +798,27 @@ function renderPlanErrorBar(summaryEl, drawerEl, submission) {
     }
   })
   right.append(retry)
+  const cycle = reviewState.submissions?.find((item) => item.n === submission.cycle)
+  const fallback = [...(cycle?.plans ?? [])].reverse().find((plan) => plan.status === "ready")
+  if (fallback) {
+    const approve = el("button", "btn btn-sm", `Approve v${fallback.n} — newer feedback stays queued`)
+    approve.addEventListener("click", async () => {
+      approve.disabled = true
+      const res = await fetch("/api/plan/approve", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${reviewerToken()}` },
+        body: JSON.stringify({ cycle: cycle.n, version: fallback.n }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        summaryEl.append(el("p", "error-note", `Approve failed (${res.status}): ${body.error ?? "unknown error"}`))
+        approve.disabled = false
+        return
+      }
+      await refresh()
+    })
+    right.append(approve)
+  }
   summaryEl.append(el("span", "action-bar-detail", submission.planError), right)
 
   drawerEl.className = "action-drawer"
@@ -804,14 +827,16 @@ function renderPlanErrorBar(summaryEl, drawerEl, submission) {
 
 function renderPlanReadyBar(summaryEl, drawerEl, submission) {
   const count = submission.plan.perRequest.length
+  const queued = queuedCommentCount(submission.payload)
   const right = el("div", "action-bar-right")
-  const approveBtn = el("button", "btn btn-primary btn-sm", "Approve plan — authorize edits")
+  const approveBtn = el("button", "btn btn-primary btn-sm", queued ? `Approve plan — ${queued} comment${queued === 1 ? "" : "s"} stay queued` : "Approve plan — authorize edits")
   approveBtn.addEventListener("click", async () => {
     approveBtn.disabled = true
     try {
       const res = await fetch("/api/plan/approve", {
         method: "POST",
-        headers: { authorization: `Bearer ${reviewerToken()}` },
+      headers: { "content-type": "application/json", authorization: `Bearer ${reviewerToken()}` },
+      body: JSON.stringify({ cycle: submission.cycle, version: submission.version }),
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
@@ -840,7 +865,7 @@ function renderPlanReadyBar(summaryEl, drawerEl, submission) {
   }
 
   const content = el("div", "drawer-content")
-  content.append(el("div", "drawer-section-title", "Fix plan"))
+  content.append(el("div", "drawer-section-title", `Fix plan v${submission.version} · ${count} covered items`))
   for (const entry of submission.plan.perRequest) {
     const request = submission.payload.requests.find((r) => r.id === entry.requestId)
     const item = el("div", "plan-item")
@@ -856,6 +881,25 @@ function renderPlanReadyBar(summaryEl, drawerEl, submission) {
     }
     content.append(item)
   }
+  const feedback = el("textarea", "comment-input")
+  feedback.placeholder = "Explain what should change in the plan (optional if new comments are queued)"
+  const revise = el("button", "btn btn-sm", "Request revised plan")
+  revise.addEventListener("click", async () => {
+    revise.disabled = true
+    const res = await fetch("/api/plan/revise", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${reviewerToken()}` },
+      body: JSON.stringify({ feedback: feedback.value.trim() || undefined }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      content.append(el("p", "error-note", `Revision failed (${res.status}): ${body.error ?? "unknown error"}`))
+      revise.disabled = false
+      return
+    }
+    await refresh()
+  })
+  content.append(feedback, revise, renderCycleHistory())
 
   drawerEl.className = `action-drawer${drawerOpen ? " open" : ""}`
   drawerEl.replaceChildren(content)
@@ -1044,6 +1088,22 @@ function requestText(requestId) {
   const submission = reviewState.submission
   const request = submission?.payload.requests.find((r) => r.id === requestId)
   return request?.text ?? requestId
+}
+
+function queuedCommentCount(payload) {
+  const covered = new Set(payload.requests.filter((request) => request.origin === "comment").map((request) => request.id))
+  return reviewState.comments.filter((comment) => !covered.has(comment.id)).length
+}
+
+function renderCycleHistory() {
+  const history = el("div", "plan-history")
+  history.append(el("div", "drawer-section-title", "Plan and cycle history"))
+  for (const cycle of reviewState.submissions ?? []) {
+    for (const version of cycle.plans) {
+      history.append(el("p", "action-bar-detail", `Round ${cycle.round} · cycle ${cycle.n} · plan v${version.n}: ${version.status}${cycle.approvedPlan === version.n ? " (approved)" : ""}`))
+    }
+  }
+  return history
 }
 
 function reviewerToken() {

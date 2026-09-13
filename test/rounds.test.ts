@@ -43,11 +43,7 @@ function stateWithReport(statuses?: [{ requestId: string; status: "addressed"; r
     requests: [{ id: "r1", text: "fix the loop", origin: "user" }],
     lessons: [],
   }
-  state.submission = { payload, planApproved: true }
-  if (statuses !== undefined) {
-    state.submission.statuses = statuses
-    state.submission.plan = { perRequest: [] }
-  }
+  state.submissions.push({ n: 1, round: 1, plans: [{ n: 1, payload, feedback: [], status: "ready", plan: { perRequest: [] }, createdAt: "now" }], approvedPlan: 1, ...(statuses !== undefined ? { statuses } : {}) })
   return state
 }
 
@@ -92,7 +88,7 @@ describe("POST /api/rounds", () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as { round: Round }
     expect(body.round.n).toBe(1)
-    expect(state.submission?.roundPrompted).toBe(true)
+    expect(state.submissions[0]?.capturedRound).toBe(1)
 
     const chunk = new TextDecoder().decode((await reader.read()).value)
     expect(chunk).toContain("event: round.prompt")
@@ -107,7 +103,7 @@ describe("POST /api/rounds", () => {
 
   test("a stalled fix flow still allows consent (review stays usable, §9)", async () => {
     const state = stateWithReport(undefined)
-    state.submission!.stalled = true
+    state.submissions[0]!.stalled = true
     const server = await startWithClient(state)
     const res = await consent(server, state)
     expect(res.status).toBe(200)
@@ -131,9 +127,8 @@ describe("POST /api/rounds", () => {
       createdAt: new Date().toISOString(),
     })
 
-    // simulate the next cycle's consent: new statuses → second round
-    state.submission!.roundPrompted = false
-    state.submission!.statuses = [{ requestId: "r1", status: "addressed", reason: "done again" }]
+    // Simulate the next approved cycle's consent.
+    state.submissions.push({ n: 2, round: 1, plans: [{ n: 1, payload: { requests: [{ id: "r2", text: "again", origin: "user" }], lessons: [] }, feedback: [], status: "ready", plan: { perRequest: [] }, createdAt: "now" }], approvedPlan: 1, statuses: [{ requestId: "r1", status: "addressed", reason: "done again" }] })
     writeFileSync(join(repoDir, "a.txt"), "one\ntwo\n")
     const second = await consent(server, state)
     const secondBody = (await second.json()) as { round: Round }
