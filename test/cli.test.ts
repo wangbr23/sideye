@@ -18,8 +18,12 @@ let processes: Bun.Subprocess[] = []
 
 afterEach(async () => {
   for (const proc of processes) {
-    proc.kill("SIGKILL")
-    await proc.exited
+    proc.kill("SIGTERM")
+    const stopped = await Promise.race([proc.exited.then(() => true), Bun.sleep(5000).then(() => false)])
+    if (!stopped) {
+      proc.kill("SIGKILL")
+      await proc.exited
+    }
   }
   processes = []
   if (repo !== undefined) {

@@ -48,3 +48,4 @@ Task format: `- [ ] \`T<n>\` <description> — <manual|agent>[, complexity: simp
 - [ ] `T27` Publish to npm so third parties can install without the repo: pick a package name (npm `sideye` is taken by an unrelated package v0.5.1), add a `#!/usr/bin/env bun` shebang to `src/cli.ts` so the `bin` entry runs, verify the plugin entry and `command/sideye.md` ship in the tarball, publish, then update the README install section with the real name — manual, depends-on: T26
 - [x] `T29` Mirror each validated fix plan as Markdown in the originating OpenCode TUI session without a second model call — agent, complexity: simple
 - [x] `T30` Remove empty duplicated unparsed-analysis panels and show explicit initial/analysis loading states — agent, complexity: simple
+- [x] `T31` Stop CLI e2e cleanup from leaking orphaned OpenCode servers by terminating launcher processes gracefully before a bounded hard-kill fallback — agent, complexity: simple
