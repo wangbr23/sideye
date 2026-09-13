@@ -1,5 +1,8 @@
 const SSE_EVENTS = ["analysis.pending", "analysis.update", "analysis.failed", "answer", "plan.pending", "plan.ready", "plan.failed", "status.ready", "round.prompt"]
 const BANNER_AFTER_FAILURES = 3
+// Page liveness beacon: the launcher tears the review down when no page has
+// beaconed within the grace window, so closing this tab ends the review.
+const HEARTBEAT_INTERVAL_MS = 10_000
 
 let reviewState = null
 let selectedRound = null
@@ -10,6 +13,16 @@ let submitInFlight = false
 let submitError = null
 let drawerOpen = false
 let expandedAnalysis = new Set() // file paths with expanded analysis
+
+async function heartbeat() {
+  try {
+    await fetch("/api/beacon", { method: "POST" })
+  } catch {
+    // server already gone — the page will show the disconnected banner
+  }
+}
+setInterval(heartbeat, HEARTBEAT_INTERVAL_MS)
+heartbeat()
 
 const hunkObserver = new IntersectionObserver(
   (entries) => {
@@ -191,9 +204,30 @@ function renderAnalysisState(round) {
   notice.setAttribute("role", "status")
 
   if (status === "failed") {
+    const retry = el("button", "btn btn-primary btn-sm", "Retry analysis")
+    retry.addEventListener("click", async () => {
+      retry.disabled = true
+      try {
+        const res = await fetch("/api/analysis/retry", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${reviewerToken()}` },
+          body: JSON.stringify({ round: round.n }),
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          throw new Error(body?.error ?? res.status)
+        }
+      } catch (err) {
+        notice.append(el("p", "error-note", `Retry failed: ${String(err)}`))
+        retry.disabled = false
+        return
+      }
+      await refresh()
+    })
     notice.append(
       el("strong", "analysis-state-title", "Analysis could not be loaded"),
       el("span", "analysis-state-detail", "The diff is still available to review."),
+      retry,
     )
   } else if (!reviewState.sessionLinked) {
     notice.className = "analysis-state failed"
@@ -757,6 +791,7 @@ function renderSubmitBar(bar, summaryEl, drawerEl) {
 function renderPlanningBar(summaryEl, drawerEl, submission) {
   const count = submission.payload.requests.length
   summaryEl.replaceChildren(
+    el("span", "loading-spinner", ""),
     el("span", "action-bar-state", `Planning… ${count} item${count === 1 ? "" : "s"}`),
     el("span", "action-bar-detail", `session: ${reviewState.sessionID}`),
   )
@@ -1017,6 +1052,7 @@ function renderStalledBar(summaryEl, drawerEl) {
 
 function renderWorkingBar(summaryEl) {
   summaryEl.replaceChildren(
+    el("span", "loading-spinner", ""),
     el("span", "action-bar-state", "Agent working…"),
     el("span", "action-bar-detail", `session: ${reviewState.sessionID}`),
   )

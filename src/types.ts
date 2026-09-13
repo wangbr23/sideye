@@ -151,7 +151,10 @@ export interface AppState {
   analysis: Map<number, AnalysisResult> // by round
   analysisStatus: Map<number, "pending" | "failed"> // absent once analysis completes
   acceptedFindings: { round: number; findingId: string }[] // marked pre-submit, serialized on submit
-  submissions: SubmissionCycle[] // immutable plan candidates, grouped by frozen round
-  // connected SSE client stream controllers (server pushes events into these)
+submissions: SubmissionCycle[] // immutable plan candidates, grouped by frozen round
+  // connected SSE stream client controllers (server pushes events into these)
   sseClients: Set<ReadableStreamDefaultController<Uint8Array>>
+  // last time an open browser page called POST /api/beacon — the launcher's
+  // sweeper tears the review down when this goes stale (the page was closed)
+  lastHeartbeat: number
 }

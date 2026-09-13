@@ -48,6 +48,12 @@ export function buildHandlers(state: AppState, deps: RouteDependencies = {}): Re
   return {
     "GET /api/state": () => Response.json(projectState(state, { sessionLinked: deps.client !== undefined })),
     "GET /api/events": () => sseResponse(state),
+    // Open-tier page liveness beacon: the launcher tears the review down when
+    // no page has beaconed within the grace window (the browser was closed).
+    "POST /api/beacon": () => {
+      state.lastHeartbeat = Date.now()
+      return Response.json({ ok: true })
+    },
     "POST /api/comments": async (req) => {
       const result = addComment(state, await parseJson(req))
       if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
@@ -109,6 +115,26 @@ export function buildHandlers(state: AppState, deps: RouteDependencies = {}): Re
         })
       }
       return Response.json({ round: result.round })
+    },
+    "POST /api/analysis/retry": async (req) => {
+      const input = (await parseJson(req)) as { round?: unknown } | undefined
+      const round = input?.round
+      if (typeof round !== "number" || !Number.isInteger(round)) {
+        return Response.json({ error: "round must be an integer" }, { status: 400 })
+      }
+      if (!state.rounds.some((item) => item.n === round)) {
+        return Response.json({ error: `round ${round} does not exist` }, { status: 400 })
+      }
+      if (state.analysisStatus.get(round) === "pending") {
+        return Response.json({ error: `analysis for round ${round} is already running` }, { status: 400 })
+      }
+      if (!deps.client) {
+        return Response.json({ error: "OpenCode session is not linked" }, { status: 500 })
+      }
+      void runAnalysis(state, state.rounds.find((item) => item.n === round)!, deps.client).catch((err) => {
+        console.error("analysis retry failed for round", round, err)
+      })
+      return Response.json({ started: true, round })
     },
     "POST /api/questions": async (req) => {
       if (!deps.client) {

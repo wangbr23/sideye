@@ -10,6 +10,7 @@ import type { OpenCodeClient } from "../src/session/client.ts"
 interface StubServer {
   client: OpenCodeClient
   requests: { prompt: string }[]
+  toasts: unknown[]
   stop(): void
 }
 
@@ -17,6 +18,7 @@ interface StubServer {
 // prompt responses served over real HTTP.
 async function stubOpencode(responses: unknown[]): Promise<StubServer> {
   const requests: { prompt: string }[] = []
+  const toasts: unknown[] = []
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -24,13 +26,17 @@ async function stubOpencode(responses: unknown[]): Promise<StubServer> {
       if (new URL(req.url).pathname === "/global/health") {
         return Response.json({ healthy: true, version: "stub-1.0" })
       }
+      if (new URL(req.url).pathname === "/tui/show-toast") {
+        toasts.push(await req.json().catch(() => null))
+        return Response.json(true)
+      }
       const body = (await req.json()) as { parts: { text: string }[] }
       requests.push({ prompt: body.parts.map((p) => p.text).join("\n") })
       return Response.json(responses.shift() ?? { info: {}, parts: [] })
     },
   })
   const client = await createSessionClient({ baseUrl: `http://127.0.0.1:${server.port}`, healthTimeoutMs: 1000 })
-  return { client, requests, stop: () => server.stop(true) }
+  return { client, requests, toasts, stop: () => server.stop(true) }
 }
 
 let stubs: StubServer[] = []
@@ -239,7 +245,7 @@ describe("runAnalysis", () => {
         return new Response("boom", { status: 500 })
       },
     })
-    stubs.push({ client: await createSessionClient({ baseUrl: `http://127.0.0.1:${server.port}`, healthTimeoutMs: 1000 }), requests: [], stop: () => server.stop(true) })
+    stubs.push({ client: await createSessionClient({ baseUrl: `http://127.0.0.1:${server.port}`, healthTimeoutMs: 1000 }), requests: [], toasts: [], stop: () => server.stop(true) })
     const { round, state } = makeRound([makeFile("a.txt")])
 
     await expect(runAnalysis(state, round, stubs[0]!.client)).rejects.toThrow(/analysis prompt failed/)

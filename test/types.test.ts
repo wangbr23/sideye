@@ -60,6 +60,7 @@ const state: AppState = {
   acceptedFindings: [],
   submissions: [],
   sseClients: new Set(),
+  lastHeartbeat: 0,
 }
 
 describe("data model shapes", () => {

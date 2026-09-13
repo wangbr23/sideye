@@ -1,8 +1,13 @@
 import type { AnalysisResult, AppState, Round } from "../types.ts"
 import type { AssistantMessage, OpenCodeClient, Part } from "../session/client.ts"
+import { promptWithTimeout, showToast } from "../session/client.ts"
 import { analysisBatches, analysisJsonSchema, analysisOutputSchema, type AnalysisOutput } from "../session/schemas.ts"
 import { analysisPrompt } from "../session/prompts.ts"
 import { broadcast } from "./sse.ts"
+
+// Thinking limit per analysis batch: a batch that exceeds this fails the round
+// analysis loudly (browser retry button) and stops the agent (LLD §5b).
+export const ANALYSIS_BATCH_TIMEOUT_MS = Number(process.env.SIDEYE_ANALYSIS_TIMEOUT_MS ?? 3 * 60_000)
 
 // Analysis pipeline (LLD §5b, §7): one blocking session.prompt per batch with
 // json_schema structured output. Per batch: zod validation → one repair retry
@@ -12,6 +17,7 @@ import { broadcast } from "./sse.ts"
 export async function runAnalysis(state: AppState, round: Round, client: OpenCodeClient): Promise<AnalysisResult> {
   state.analysisStatus.set(round.n, "pending")
   broadcast(state, "analysis.pending", { round: round.n })
+  void showToast(client, `Analyzing the diff (round ${round.n}) — results appear in the review browser.`, "info")
 
   try {
     const merged: AnalysisResult = { files: [], hunks: [], findings: [] }
@@ -43,10 +49,16 @@ export async function runAnalysis(state: AppState, round: Round, client: OpenCod
     state.analysis.set(round.n, merged)
     state.analysisStatus.delete(round.n)
     broadcast(state, "analysis.update", { round: round.n })
+    void showToast(
+      client,
+      `Analysis ready (round ${round.n}) — ${merged.files.length} files, ${merged.hunks.length} hunks, ${merged.findings.length} findings.`,
+      "success",
+    )
     return merged
   } catch (err) {
     state.analysisStatus.set(round.n, "failed")
     broadcast(state, "analysis.failed", { round: round.n })
+    void showToast(client, `Analysis failed (round ${round.n}) — retry from the review browser.`, "error")
     throw err
   }
 }
@@ -71,18 +83,14 @@ function describeError(error: AssistantMessage["error"]): string {
 }
 
 async function promptBatch(state: AppState, client: OpenCodeClient, prompt: string): Promise<{ info: AssistantMessage; parts: Part[] }> {
-  const result = await client.session.prompt({
+  const data = await promptWithTimeout(client, {
     sessionID: state.sessionID,
     parts: [{ type: "text", text: prompt }],
     format: { type: "json_schema", schema: analysisJsonSchema },
+    timeoutMs: ANALYSIS_BATCH_TIMEOUT_MS,
+    what: "analysis prompt",
   })
-  if (result.error !== undefined) {
-    throw new Error(`OpenCode analysis prompt failed: ${summarize(result.error)}`)
-  }
-  if (result.data === undefined) {
-    throw new Error("OpenCode analysis prompt returned no data")
-  }
-  return result.data
+  return data
 }
 
 function mergeInto(merged: AnalysisResult, output: AnalysisOutput): void {

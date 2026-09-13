@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test"
-import { createSessionClient } from "../src/session/client.ts"
+import { createSessionClient, promptWithTimeout } from "../src/session/client.ts"
 
 let hitPaths: string[] = []
 
@@ -59,5 +59,47 @@ describe("createSessionClient", () => {
     // bounded: the timeout must fire long before the stub's 5s sleep ends
     await Bun.sleep(1000)
     expect(Date.now() - start).toBeLessThan(4000)
+  })
+})
+
+describe("promptWithTimeout", () => {
+  test("returns the prompt data on success", async () => {
+    current = serve(async (req) => {
+      const path = new URL(req.url).pathname
+      if (path === "/global/health") return Response.json({ healthy: true, version: "test" })
+      return Response.json({ info: { id: "msg_1", role: "assistant" }, parts: [] })
+    })
+    const client = await createSessionClient({ baseUrl: current.baseUrl, healthTimeoutMs: 1000 })
+    const data = await promptWithTimeout(client, {
+      sessionID: "ses_1",
+      parts: [{ type: "text", text: "think" }],
+      timeoutMs: 5000,
+    })
+    expect((data as { info: { id: string } }).info.id).toBe("msg_1")
+  })
+
+  test("hitting the thinking limit stops the agent and throws a loud error", async () => {
+    const aborts: string[] = []
+    current = serve(async (req) => {
+      const path = new URL(req.url).pathname
+      if (path === "/global/health") return Response.json({ healthy: true, version: "test" })
+      if (path.endsWith("/abort")) {
+        aborts.push(path)
+        return Response.json({})
+      }
+      // the prompt never answers — only the thinking limit can unblock it
+      await Bun.sleep(2000)
+      return Response.json({ info: { id: "msg_1", role: "assistant" }, parts: [] })
+    })
+    const client = await createSessionClient({ baseUrl: current.baseUrl, healthTimeoutMs: 1000 })
+    await expect(
+      promptWithTimeout(client, {
+        sessionID: "ses_1",
+        parts: [{ type: "text", text: "think" }],
+        timeoutMs: 150,
+      }),
+    ).rejects.toThrow(/thinking limit reached: no response within 1s — the agent was stopped/)
+    await Bun.sleep(300)
+    expect(aborts.length).toBeGreaterThan(0)
   })
 })

@@ -108,6 +108,32 @@ describe("review server skeleton", () => {
   })
 })
 
+describe("open-tier beacon route", () => {
+  test("POST /api/beacon works without a token and refreshes lastHeartbeat", async () => {
+    const state = createState({
+      token: generateReviewerToken(),
+      sessionID: "ses_1",
+      repoPath: "/repo",
+      target: { kind: "worktree" },
+    })
+    const server = startReviewServer({
+      repoPath: "/repo",
+      token: generateReviewerToken(),
+      staticDir,
+      handlers: buildHandlers(state),
+    })
+    try {
+      const before = state.lastHeartbeat
+      await Bun.sleep(20)
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/beacon`, { method: "POST" })
+      expect(res.status).toBe(200)
+      expect(state.lastHeartbeat).toBeGreaterThan(before)
+    } finally {
+      server.stop()
+    }
+  })
+})
+
 describe("open-tier comment route", () => {
   let repoDir: string
   let state: ReturnType<typeof createState>

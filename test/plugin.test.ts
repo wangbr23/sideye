@@ -79,7 +79,13 @@ describe("SideyePlugin", () => {
 
     const result = await runTool(hooks, { commit: undefined }, { sessionID: "ses_plugin", worktree: repoDir })
     expect(result).toMatch(/^Sideye review running: http:\/\/127\.0\.0\.1:\d+\/\?reviewer=/)
-    expect(toasts).toHaveLength(1)
+    // the launch toast plus (asynchronously) the analysis toasts — the launch
+    // toast itself must be present
+    const launchToast = toasts.find((t) => {
+      const body = t as { message?: string }
+      return body.message?.includes("Review running:") ?? false
+    })
+    expect(launchToast).toBeDefined()
 
     const origin = result.replace(/^Sideye review running: /, "").replace(/\?reviewer=.*/, "")
     const state = (await (await fetch(`${origin}/api/state`)).json()) as { sessionID: string; rounds: unknown[] }

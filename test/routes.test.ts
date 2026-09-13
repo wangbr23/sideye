@@ -7,6 +7,7 @@ import { createState, captureRound } from "../src/server/state.ts"
 import { buildHandlers, projectState } from "../src/server/routes.ts"
 import { broadcast } from "../src/server/sse.ts"
 import { generateReviewerToken, startReviewServer } from "../src/server/http.ts"
+import { createSessionClient } from "../src/session/client.ts"
 
 let repoDir: string
 
@@ -221,6 +222,113 @@ describe("POST /api/comments/delete", () => {
       expect(notJson.status).toBe(400)
     } finally {
       server.stop()
+    }
+  })
+})
+
+describe("POST /api/analysis/retry", () => {
+  const validAnalysis = {
+    files: [
+      { file: "a.txt", purpose: "changes the file", confidence: "evidence", citations: [{ source: "a.txt", quote: "changed" }] },
+    ],
+    hunks: [{ file: "a.txt", hunkIndex: 0, rationale: "reworded", confidence: "inference", citations: [] }],
+    findings: [{ id: "f1", file: "a.txt", hunkIndex: 0, claim: "a claim", citations: [] }],
+  }
+
+  test("validates round and running state before re-running", async () => {
+    const state = createState({ token: generateReviewerToken(), sessionID: "ses_1", repoPath: repoDir, target: { kind: "worktree" } })
+    await captureRound(state)
+    const server = startServer(state)
+    const auth = { authorization: `Bearer ${state.token}`, "content-type": "application/json" }
+    try {
+      const ghost = await fetch(`${base(server)}/api/analysis/retry`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ round: 9 }),
+      })
+      expect(ghost.status).toBe(400)
+      expect(((await ghost.json()) as { error: string }).error).toMatch(/round 9 does not exist/)
+
+      state.analysisStatus.set(1, "pending")
+      const running = await fetch(`${base(server)}/api/analysis/retry`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ round: 1 }),
+      })
+      expect(running.status).toBe(400)
+      expect(((await running.json()) as { error: string }).error).toMatch(/already running/)
+    } finally {
+      server.stop()
+    }
+  })
+
+  test("without a linked session it fails loudly", async () => {
+    const state = createState({ token: generateReviewerToken(), sessionID: "ses_1", repoPath: repoDir, target: { kind: "worktree" } })
+    await captureRound(state)
+    state.analysisStatus.set(1, "failed")
+    const server = startServer(state)
+    try {
+      const res = await fetch(`${base(server)}/api/analysis/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ round: 1 }),
+      })
+      expect(res.status).toBe(500)
+    } finally {
+      server.stop()
+    }
+  })
+
+  test("re-runs a failed round analysis in the background with a linked client", async () => {
+    const state = createState({ token: generateReviewerToken(), sessionID: "ses_1", repoPath: repoDir, target: { kind: "worktree" } })
+    writeFileSync(join(repoDir, "a.txt"), "changed\n")
+    await captureRound(state)
+    state.analysisStatus.set(1, "failed")
+
+    const opencode = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (req) => {
+        const path = new URL(req.url).pathname
+        if (path === "/global/health") return Response.json({ healthy: true, version: "stub-1.0" })
+        if (path === "/tui/show-toast") return Response.json(true)
+        return Response.json({
+          info: { id: "msg_1", sessionID: "ses_1", role: "assistant", structured: validAnalysis },
+          parts: [{ id: "p1", sessionID: "ses_1", messageID: "msg_1", type: "text", text: "ok" }],
+        })
+      },
+    })
+    try {
+      const client = await createSessionClient({ baseUrl: `http://127.0.0.1:${opencode.port}`, healthTimeoutMs: 1000 })
+      const server = startReviewServer({
+        repoPath: repoDir,
+        token: state.token,
+        staticDir: mkdtempSync(join(tmpdir(), "sideye-routes-static-")),
+        handlers: buildHandlers(state, { client }),
+      })
+      try {
+        const res = await fetch(`${base(server)}/api/analysis/retry`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
+          body: JSON.stringify({ round: 1 }),
+        })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ started: true, round: 1 })
+
+        const deadline = Date.now() + 5000
+        let analysis: unknown
+        while (Date.now() < deadline) {
+          analysis = state.analysis.get(1)
+          if (analysis) break
+          await Bun.sleep(50)
+        }
+        expect(analysis).toBeDefined()
+        expect(state.analysisStatus.has(1)).toBe(false)
+      } finally {
+        server.stop()
+      }
+    } finally {
+      opencode.stop(true)
     }
   })
 })

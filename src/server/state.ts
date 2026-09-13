@@ -28,6 +28,7 @@ export function createState(init: AppStateInit): AppState {
     acceptedFindings: [],
     submissions: [],
     sseClients: new Set(),
+    lastHeartbeat: Date.now(),
   }
 }
 

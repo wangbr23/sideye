@@ -91,3 +91,23 @@ Append-only log of architecture decisions. One entry per decision, newest at the
 **Decision:** Each diff round has one submission cycle with versioned, immutable candidate plans. Before approval, the reviewer may repeatedly request a revised plan with written feedback and newly added comments; none of those actions authorize edits. Only an explicitly identified ready plan version and its exact payload may be approved. Newer comments do not invalidate a ready plan: the reviewer may approve it with a visible warning, leaving uncovered feedback queued. Comments added after approval are never injected into the running fix. After status and consented capture create the next diff round, queued feedback may start a new submission cycle. Prior plans, payloads, statuses, and anchors remain visible as history.
 
 **Consequences:** Reviewers can negotiate a plan without accepting unwanted edits; stale browser actions cannot authorize a different plan; queued comments reliably reach a later cycle; lesson proposals correspond only to the work package actually approved. The state model grows from one submission to submission-cycle and plan-version history, and the UI must distinguish diff rounds, plan versions, covered items, and queued feedback.
+
+## 2026-09-13 — Closing the browser page ends the review; different-target launches replace it
+
+**Status:** Accepted (supersedes the "a review ends when its launcher's process ends" consequence of the implementation-architecture decision)
+
+**Context:** Closing the review tab left the review running until its launcher process ended. A later launch for a new commit then reused the stale review through the lockfile — old rounds and old comments, with no way to get a fresh review for the new target.
+
+**Decision:** Every open page beacons `POST /api/beacon` every 10s; the launcher's sweeper tears the review down (stop server, remove lockfile, and for CLI processes exit) once no page has beaconed within a 90s grace window. Lockfile reuse additionally requires a matching review target; a different-target launch replaces the running review — in-process (plugin) reviews stop cleanly, CLI-owned reviews receive SIGTERM and shut down via their handler, and foreign plugin-owned locks are taken over while the owner's own sweeper reaps the orphan on its next ownership check. The plugin path stops the in-process review server only; opencode itself is never killed.
+
+**Consequences:** Closing the page (or the machine sleeping past the grace window) ends the review, so a new-commit review never inherits stale comments; a CLI-launched review ends its dedicated process; mid-fix tab close loses the status report and round consent (accepted tradeoff — relaunch for the next round). The grace window tolerates background-tab timer throttling; both windows are env-tunable for tests.
+
+## 2026-09-13 — Agent thinking limits with a hard abort for analysis and plan prompts
+
+**Status:** Accepted
+
+**Context:** Analysis batches and plan prompts ran unbounded — a slow model could think for tens of minutes, with only a static "Planning…" line in the browser and no signal in the TUI.
+
+**Decision:** Each analysis batch prompt races a 3-minute limit and each plan attempt a 10-minute limit (env-tunable `SIDEYE_ANALYSIS_TIMEOUT_MS` / `SIDEYE_PLAN_TIMEOUT_MS`). On expiry Sideye stops waiting and aborts the session's agent loop via v2 `session.abort`, so the model actually stops thinking rather than burning tokens. The flow fails loudly: analysis shows a failed state with a retry button backed by a new control-tier `POST /api/analysis/retry`; plans keep their existing retry. The TUI receives best-effort toasts at analysis/plan start, completion, and failure, and the browser shows spinner animations in the planning and agent-working states. One SDK gotcha recorded in code: the SDK folds an aborted fetch into `result.error` instead of throwing, and Bun's error properties are non-enumerable so `JSON.stringify` loses the name — the check reads `result.error.name === "TimeoutError"`.
+
+**Consequences:** Agent thinking is bounded end-to-end with a clear path back; a timeout aborts whatever the session's agent loop was processing (at that point it is Sideye's own prompt); timed-out analysis and plans are retryable from the browser.

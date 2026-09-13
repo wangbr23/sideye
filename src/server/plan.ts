@@ -1,8 +1,13 @@
 import type { AppState, Plan, PlanVersion } from "../types.ts"
 import type { OpenCodeClient } from "../session/client.ts"
+import { promptWithTimeout, showToast } from "../session/client.ts"
 import { planJsonSchema, planOutputSchema, type PlanOutput } from "../session/schemas.ts"
 import { planPrompt } from "../session/prompts.ts"
 import { broadcast } from "./sse.ts"
+
+// Thinking limit per plan attempt: an over-limit draft fails the plan version
+// loudly (browser retry) and stops the agent (LLD §5c).
+export const PLAN_TIMEOUT_MS = Number(process.env.SIDEYE_PLAN_TIMEOUT_MS ?? 10 * 60_000)
 
 // Plan flow (LLD §5c): after submit, one structured prompt asking for a
 // per-request approach. Dispatched in the background (like the fix flow) so
@@ -18,10 +23,12 @@ export function startPlanning(state: AppState, client: OpenCodeClient, cycleN: n
   const version = getVersion(state, cycleN, versionN)
   if (!version || version.status !== "planning") return
   broadcast(state, "plan.pending", { cycle: cycleN, version: versionN })
+  void showToast(client, `Drafting a fix plan (${version.payload.requests.length} items) — approve it in the review browser.`, "info")
   void runPlan(state, client, cycleN, versionN)
     .catch((err) => {
       if (version.status === "planning") { version.status = "failed"; version.error = err instanceof Error ? err.message : String(err) }
       broadcast(state, "plan.failed", { cycle: cycleN, version: versionN, error: version.error })
+      void showToast(client, `Fix plan failed (v${versionN}) — retry from the review browser.`, "error")
     })
 }
 
@@ -156,16 +163,11 @@ function parsePlan(info: { structured?: unknown; error?: { name?: string } }): {
 }
 
 async function promptPlan(state: AppState, client: OpenCodeClient, prompt: string) {
-  const result = await client.session.prompt({
+  return promptWithTimeout(client, {
     sessionID: state.sessionID,
     parts: [{ type: "text", text: prompt }],
     format: { type: "json_schema", schema: planJsonSchema },
+    timeoutMs: PLAN_TIMEOUT_MS,
+    what: "plan prompt",
   })
-  if (result.error !== undefined) {
-    throw new Error(`OpenCode plan prompt failed: ${JSON.stringify(result.error)}`)
-  }
-  if (result.data === undefined) {
-    throw new Error("OpenCode plan prompt returned no data")
-  }
-  return result.data
 }

@@ -39,6 +39,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   console.log("Connecting to OpenCode…")
   const opencode = await connectCliOpencode()
+  // Review teardown paths (CLI shutdown signals, heartbeat expiry, and
+  // replacement by a different-target launch) all end the process — this
+  // process exists only to host the review. stopReview is idempotent, so the
+  // teardown path that already stopped the server can call stop safely.
+  const stop = () => {
+    stopReview(repoPath)
+    opencode.stop()
+    process.exit(0)
+  }
+  process.on("SIGINT", stop)
+  process.on("SIGTERM", stop)
   try {
     const { client, url } = opencode
     await createSessionClient({ baseUrl: url })
@@ -50,22 +61,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       sessionID: session.data.id,
       target,
       client,
+      mode: "cli",
+      onEnd: stop,
     })
     console.log(`Review running: ${result.url}`)
     if (result.reused) console.log("(reusing the review already running for this repo)")
-    console.log("Keep this terminal open — the review ends when it closes.")
+    console.log("The review ends when the browser page closes or this terminal does.")
   } catch (err) {
     opencode.stop()
     throw err
   }
-
-  const shutdown = () => {
-    stopReview(repoPath)
-    opencode.stop()
-    process.exit(0)
-  }
-  process.on("SIGINT", shutdown)
-  process.on("SIGTERM", shutdown)
 }
 
 function fail(message: string): never {
