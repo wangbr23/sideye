@@ -25,6 +25,7 @@ export function createState(init: AppStateInit): AppState {
     rounds: [],
     comments: [],
     analysis: new Map(),
+    analysisStatus: new Map(),
     acceptedFindings: [],
     sseClients: new Set(),
   }

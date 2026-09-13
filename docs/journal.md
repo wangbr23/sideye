@@ -239,3 +239,11 @@ Corrected the prior journal entry's assumption that structured plans were alread
 After plan validation (including the repair-response path), `src/server/plan.ts` now formats the canonical plan plus each request's source/text and affected files as Markdown, then adds it to the same assistant message through `client.part.update`. This emits OpenCode's normal `message.part.updated` event, so the originating session renders the plan without a second model call or a markdown file. The mirror is deliberately best-effort: a missing/drifted part-update API logs a warning but leaves the browser plan and approval flow intact.
 
 Tests assert the text part targets the validated assistant message, includes the browser plan content, uses the repair message after structured-output retry, and degrades without invalidating the plan on a part-update failure. Verification: focused plan suite 9 pass; full suite 122 pass; `bun run typecheck` clean.
+
+## 2026-09-11 — analysis loading clarity and empty fallback cleanup
+
+The large beige "Unparsed analysis" area came from structured-output failures whose assistant replies contained no text parts: multiple empty batch fallbacks joined into whitespace, and the frontend repeated that round-level fallback under every file. `runAnalysis` now drops whitespace-only fallback text, and the frontend renders a real fallback once per round above the files instead of once per file.
+
+Added projected per-round analysis lifecycle state (`pending` / `failed`) with matching SSE events. The browser now starts with a visible "Loading review…" state, then shows "Analyzing changes" with explicit wording that file explanations and findings are loading while the diff remains reviewable; failures and unlinked sessions get distinct honest states. A small responsive header/action-bar adjustment keeps these states and all controls within 320px-wide screens.
+
+Verified with the throwaway stub-server + Playwright method: delayed initial state, pending analysis copy, whitespace fallback (zero panels), real fallback (exactly one panel across two files), long diff content, and zero right-edge overflow at desktop, 390px, and 320px widths. Full suite: 123 pass; `bun run typecheck`, `node --check frontend/app.js`, and `git diff --check` clean.

@@ -126,6 +126,7 @@ export interface AppState {
   rounds: Round[]
   comments: Comment[]
   analysis: Map<number, AnalysisResult> // by round
+  analysisStatus: Map<number, "pending" | "failed"> // absent once analysis completes
   acceptedFindings: { round: number; findingId: string }[] // marked pre-submit, serialized on submit
   submission?: {
     payload: SubmitPayload

@@ -123,11 +123,15 @@ describe("runAnalysis", () => {
       expect(result.findings[0]?.claim).toBe("greeting lost its i18n")
       expect(result.unparsed).toBeUndefined()
       expect(state.analysis.get(1)).toEqual(result)
+      expect(state.analysisStatus.has(1)).toBe(false)
 
       const { value } = await reader.read()
       const chunk = new TextDecoder().decode(value)
-      expect(chunk).toContain("event: analysis.update")
-      expect(chunk).toContain('"round":1')
+      expect(chunk).toContain("event: analysis.pending")
+      const { value: updateValue } = await reader.read()
+      const updateChunk = new TextDecoder().decode(updateValue)
+      expect(updateChunk).toContain("event: analysis.update")
+      expect(updateChunk).toContain('"round":1')
       reader.releaseLock()
     } finally {
       server.stop()
@@ -161,6 +165,19 @@ describe("runAnalysis", () => {
     expect(result.files).toEqual([])
     expect(result.unparsed).toBe("second bad output")
     expect(state.analysis.get(1)?.unparsed).toBe("second bad output")
+  })
+
+  test("invalid output without fallback text does not store whitespace-only unparsed analysis", async () => {
+    const stub = await makeStub([
+      response({ structured: { nonsense: true }, text: " " }),
+      response({ structured: { still: "bad" }, text: "\n\n" }),
+    ])
+    const { round, state } = makeRound([makeFile("a.txt")])
+
+    const result = await runAnalysis(state, round, stub.client)
+
+    expect(result.unparsed).toBeUndefined()
+    expect(state.analysis.get(1)?.unparsed).toBeUndefined()
   })
 
   test("info.error (StructuredOutputError) takes the same retry path", async () => {
@@ -225,6 +242,7 @@ describe("runAnalysis", () => {
     stubs.push({ client: await createSessionClient({ baseUrl: `http://127.0.0.1:${server.port}`, healthTimeoutMs: 1000 }), requests: [], stop: () => server.stop(true) })
     const { round, state } = makeRound([makeFile("a.txt")])
 
-    expect(runAnalysis(state, round, stubs[0]!.client)).rejects.toThrow(/analysis prompt failed/)
+    await expect(runAnalysis(state, round, stubs[0]!.client)).rejects.toThrow(/analysis prompt failed/)
+    expect(state.analysisStatus.get(1)).toBe("failed")
   })
 })

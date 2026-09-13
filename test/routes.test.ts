@@ -49,6 +49,7 @@ describe("GET /api/state", () => {
     const state = createState({ token: generateReviewerToken(), sessionID: "ses_1", repoPath: repoDir, target: { kind: "worktree" } })
     writeFileSync(join(repoDir, "a.txt"), "changed\n")
     await captureRound(state)
+    state.analysisStatus.set(1, "pending")
 
     const server = startServer(state)
     try {
@@ -63,6 +64,7 @@ describe("GET /api/state", () => {
       expect(rounds[0]?.n).toBe(1)
       expect(rounds[0]?.files[0]?.path).toBe("a.txt")
       expect(body.analysis).toEqual({})
+      expect(body.analysisStatus).toEqual({ "1": "pending" })
       expect(body.submission).toBeNull()
     } finally {
       server.stop()

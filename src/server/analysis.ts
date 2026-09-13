@@ -7,38 +7,48 @@ import { broadcast } from "./sse.ts"
 // Analysis pipeline (LLD §5b, §7): one blocking session.prompt per batch with
 // json_schema structured output. Per batch: zod validation → one repair retry
 // with the validation error appended → plain-text fallback. Batch results merge
-// into one AnalysisResult per round; every batch lands as an `analysis.update`
-// SSE event, then the merged result is stored. Transport-level failures
-// propagate — platform drift fails loudly, never silently.
+// into one AnalysisResult per round. Projected lifecycle state and SSE events
+// keep the browser honest while the prompts run or if transport fails.
 export async function runAnalysis(state: AppState, round: Round, client: OpenCodeClient): Promise<AnalysisResult> {
-  const merged: AnalysisResult = { files: [], hunks: [], findings: [] }
-  const unparsed: string[] = []
+  state.analysisStatus.set(round.n, "pending")
+  broadcast(state, "analysis.pending", { round: round.n })
 
-  for (const batch of analysisBatches(round.files)) {
-    const prompt = analysisPrompt(batch)
-    const first = await promptBatch(state, client, prompt)
-    const parsed = parseStructured(first.info)
-    if ("data" in parsed) {
-      mergeInto(merged, parsed.data)
-      continue
+  try {
+    const merged: AnalysisResult = { files: [], hunks: [], findings: [] }
+    const unparsed: string[] = []
+
+    for (const batch of analysisBatches(round.files)) {
+      const prompt = analysisPrompt(batch)
+      const first = await promptBatch(state, client, prompt)
+      const parsed = parseStructured(first.info)
+      if ("data" in parsed) {
+        mergeInto(merged, parsed.data)
+        continue
+      }
+      const retry = await promptBatch(
+        state,
+        client,
+        `${prompt}\n\nYour previous reply failed validation (${parsed.issues}). Reply again with corrected JSON matching the schema.`,
+      )
+      const reparsed = parseStructured(retry.info)
+      if ("data" in reparsed) {
+        mergeInto(merged, reparsed.data)
+        continue
+      }
+      const fallback = fallbackText(retry.parts)
+      if (fallback.trim() !== "") unparsed.push(fallback)
     }
-    const retry = await promptBatch(
-      state,
-      client,
-      `${prompt}\n\nYour previous reply failed validation (${parsed.issues}). Reply again with corrected JSON matching the schema.`,
-    )
-    const reparsed = parseStructured(retry.info)
-    if ("data" in reparsed) {
-      mergeInto(merged, reparsed.data)
-      continue
-    }
-    unparsed.push(fallbackText(retry.parts))
+
+    if (unparsed.length > 0) merged.unparsed = unparsed.join("\n\n")
+    state.analysis.set(round.n, merged)
+    state.analysisStatus.delete(round.n)
+    broadcast(state, "analysis.update", { round: round.n })
+    return merged
+  } catch (err) {
+    state.analysisStatus.set(round.n, "failed")
+    broadcast(state, "analysis.failed", { round: round.n })
+    throw err
   }
-
-  if (unparsed.length > 0) merged.unparsed = unparsed.join("\n\n")
-  state.analysis.set(round.n, merged)
-  broadcast(state, "analysis.update", { round: round.n })
-  return merged
 }
 
 function parseStructured(info: AssistantMessage): { data: AnalysisOutput } | { issues: string } {

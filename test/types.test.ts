@@ -56,6 +56,7 @@ const state: AppState = {
   rounds: [round],
   comments: [comment],
   analysis: new Map(),
+  analysisStatus: new Map(),
   acceptedFindings: [],
   sseClients: new Set(),
 }

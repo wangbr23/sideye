@@ -39,6 +39,7 @@ describe("AppState store", () => {
     expect(state.rounds).toEqual([])
     expect(state.comments).toEqual([])
     expect(state.analysis.size).toBe(0)
+    expect(state.analysisStatus.size).toBe(0)
     expect(state.sseClients.size).toBe(0)
     expect(state.submission).toBeUndefined()
   })

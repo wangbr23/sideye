@@ -134,6 +134,7 @@ interface AppState {
   rounds: Round[]
   comments: Comment[]
   analysis: Map<number, AnalysisResult>          // by round
+  analysisStatus: Map<number, "pending" | "failed">
   submission?: { payload: SubmitPayload; plan?: Plan; planApproved?: boolean;
                  statuses?: RequestStatus[]; roundPrompted?: boolean }
   sseClients: Set<WritableStream>

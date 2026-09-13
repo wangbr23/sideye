@@ -28,6 +28,7 @@ export function projectState(state: AppState, options: { sessionLinked?: boolean
     rounds: state.rounds,
     comments: state.comments,
     analysis: Object.fromEntries(state.analysis),
+    analysisStatus: Object.fromEntries(state.analysisStatus),
     acceptedFindings: state.acceptedFindings,
     submission: state.submission ?? null,
   }

@@ -1,4 +1,4 @@
-const SSE_EVENTS = ["analysis.update", "answer", "plan.pending", "plan.ready", "plan.failed", "status.ready", "round.prompt"]
+const SSE_EVENTS = ["analysis.pending", "analysis.update", "analysis.failed", "answer", "plan.pending", "plan.ready", "plan.failed", "status.ready", "round.prompt"]
 const BANNER_AFTER_FAILURES = 3
 
 let reviewState = null
@@ -158,6 +158,10 @@ function renderDiff() {
 
   // Overall comment form and Q&A at the top of the diff
   const topElements = []
+  const analysisState = renderAnalysisState(round)
+  if (analysisState !== null) topElements.push(analysisState)
+  const unparsed = renderUnparsedAnalysis(round)
+  if (unparsed !== null) topElements.push(unparsed)
   if (openForm !== null && openForm.scope === "overall") {
     topElements.push(renderCommentForm("overall"))
   }
@@ -177,6 +181,47 @@ function renderDiff() {
     return
   }
   pane.replaceChildren(...topElements, ...round.files.map(renderFile))
+}
+
+function renderAnalysisState(round) {
+  if (!round || reviewState.analysis[String(round.n)]) return null
+
+  const status = reviewState.analysisStatus?.[String(round.n)]
+  const notice = el("div", `analysis-state ${status === "failed" ? "failed" : "loading"}`)
+  notice.setAttribute("role", "status")
+
+  if (status === "failed") {
+    notice.append(
+      el("strong", "analysis-state-title", "Analysis could not be loaded"),
+      el("span", "analysis-state-detail", "The diff is still available to review."),
+    )
+  } else if (!reviewState.sessionLinked) {
+    notice.className = "analysis-state failed"
+    notice.append(
+      el("strong", "analysis-state-title", "Analysis is unavailable"),
+      el("span", "analysis-state-detail", "No agent session is linked to this review."),
+    )
+  } else {
+    notice.append(
+      el("span", "loading-spinner", ""),
+      el("strong", "analysis-state-title", "Analyzing changes"),
+      el("span", "analysis-state-detail", "File explanations and findings are loading. You can review the diff now."),
+    )
+  }
+  return notice
+}
+
+function renderUnparsedAnalysis(round) {
+  if (!round) return null
+  const text = reviewState.analysis[String(round.n)]?.unparsed
+  if (typeof text !== "string" || text.trim() === "") return null
+
+  const unparsed = el("div", "unparsed-block")
+  unparsed.append(
+    el("div", "unparsed-label", "Unparsed analysis"),
+    el("pre", "unparsed-text", text),
+  )
+  return unparsed
 }
 
 function renderFile(file) {
@@ -247,16 +292,6 @@ function renderFile(file) {
       }
       section.append(detail)
     }
-  }
-
-  // Unparsed analysis
-  if (analysis?.unparsed) {
-    const unparsed = el("div", "unparsed-block")
-    unparsed.append(
-      el("div", "unparsed-label", "Unparsed analysis"),
-      el("pre", "unparsed-text", analysis.unparsed),
-    )
-    section.append(unparsed)
   }
 
   // File-scope comment form
