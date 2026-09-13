@@ -674,6 +674,8 @@ function renderActionBar() {
     renderStatusBar(summaryEl, drawerEl, submission)
   } else if (submission.planApproved && submission.stalled) {
     renderStalledBar(summaryEl, drawerEl)
+  } else if (submission.planApproved && submission.statusError) {
+    renderFixErrorBar(summaryEl, drawerEl, submission)
   } else if (submission.planApproved) {
     renderWorkingBar(summaryEl)
     drawerEl.className = "action-drawer"
@@ -1018,6 +1020,15 @@ function renderWorkingBar(summaryEl) {
     el("span", "action-bar-state", "Agent working…"),
     el("span", "action-bar-detail", `session: ${reviewState.sessionID}`),
   )
+}
+
+function renderFixErrorBar(summaryEl, drawerEl, submission) {
+  summaryEl.replaceChildren(
+    el("span", "action-bar-state", "Fix failed"),
+    el("span", "action-bar-detail", submission.statusError),
+  )
+  drawerEl.className = "action-drawer"
+  drawerEl.replaceChildren()
 }
 
 function renderPlanItem(request, submission) {

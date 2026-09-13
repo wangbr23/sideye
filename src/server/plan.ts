@@ -8,8 +8,9 @@ import { broadcast } from "./sse.ts"
 // per-request approach. Dispatched in the background (like the fix flow) so
 // the submit response returns immediately and the UI shows a live planning
 // state; plan.pending / plan.ready / plan.failed events keep every tab
-// current. A validated plan is also mirrored as Markdown onto its assistant
-// message so the originating TUI can render it. Validation follows the
+// current. A validated plan is also mirrored as presentation-only Markdown
+// onto its assistant message so the originating TUI can render it. Validation
+// follows the
 // analysis pattern: one repair retry with the issues appended, then a loud
 // failure stored on the submission (retryable via POST /api/plan/retry) — the
 // plan is load-bearing for the fix flow and has no designed fallback surface.
@@ -92,6 +93,10 @@ async function mirrorPlanToTui(state: AppState, client: OpenCodeClient, messageI
         messageID,
         type: "text",
         text: renderPlanMarkdown(version, plan),
+        // OpenCode replays non-ignored assistant parts into later model calls.
+        // This text follows StructuredOutput and is only for TUI presentation;
+        // replaying it makes the provider reject the message-part ordering.
+        ignored: true,
         time: { start: now, end: now },
         metadata: { source: "sideye", kind: "plan" },
       },

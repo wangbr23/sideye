@@ -269,3 +269,9 @@ The API exposes versioned plan events and revision/retry/approval identifiers. T
 ## 2026-09-12 — T28 test migration completed
 
 Migrated plan, fix, round, state, lesson, and route fixtures from the old singleton submission shape to `SubmissionCycle`/`PlanVersion`, including explicit approval/retry route bodies. Retained their behavioral coverage while asserting candidate payloads and cycle history. The frontend now retains history after round capture, permits an earlier ready candidate when a newer revision failed, and wraps action controls at 320px. Verification: `bun test` 126 pass; `bun run typecheck`, `node --check frontend/app.js`, and `git diff --check` clean. Plugin tests intentionally log their stubbed background-analysis failure but pass.
+
+## 2026-09-12 — fix pass no longer stalls after plan approval
+
+The first live approval after TUI plan mirroring exposed a deterministic OpenCode history failure. Sideye appended plan Markdown after the completed `StructuredOutput` tool part; OpenCode replayed that text into the next model call, and the provider rejected the resulting part order with `Invalid prompt: The messages do not match the ModelMessage[] schema.` No edits ran. Sideye then misclassified `UnknownError` as malformed status JSON, retried it, and the frontend ignored `statusError` unless statuses existed, leaving the action bar on `Agent working…`.
+
+The plan mirror is now an `ignored` text part, which remains visible in the TUI but is excluded by OpenCode's model-history conversion. The fix flow distinguishes model execution errors from schema validation, preserves the nested error message, avoids a futile repair prompt, and the browser renders `Fix failed` immediately. The already-open session's existing mirror part was repaired in place with `ignored: true`. Focused plan/fix tests pass; browser verification at desktop and 320px showed the exact failure with no horizontal overflow.

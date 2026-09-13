@@ -56,11 +56,7 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
   const stallTimeoutMs = options.stallTimeoutMs ?? FIX_STALL_TIMEOUT_MS
   const events = await client.event.subscribe()
   try {
-    await client.session.promptAsync({
-      sessionID: state.sessionID,
-      parts: [{ type: "text", text: prompt }],
-      format: { type: "json_schema", schema: fixJsonSchema },
-    })
+    await sendFixPrompt(client, state.sessionID, prompt)
     const wentIdle = await waitForIdle(events, state.sessionID, stallTimeoutMs)
     if (!wentIdle) {
       approved.cycle.stalled = true
@@ -68,17 +64,21 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
       return
     }
     const report = await latestStructured(client, state.sessionID)
+    if (report.error !== undefined) {
+      storeFixError(state, `fix pass failed: ${messageError(report.error)}`)
+      return
+    }
     const parsed = parseFix(report)
     if ("data" in parsed) {
       storeStatuses(state, parsed.data)
       return
     }
     // one repair pass, same as every structured flow (LLD §7)
-    await client.session.promptAsync({
-      sessionID: state.sessionID,
-      parts: [{ type: "text", text: `${prompt}\n\nYour previous report failed validation (${parsed.issues}). Reply again with corrected JSON matching the schema.` }],
-      format: { type: "json_schema", schema: fixJsonSchema },
-    })
+    await sendFixPrompt(
+      client,
+      state.sessionID,
+      `${prompt}\n\nYour previous report failed validation (${parsed.issues}). Reply again with corrected JSON matching the schema.`,
+    )
     const wentIdleAgain = await waitForIdle(events, state.sessionID, stallTimeoutMs)
     if (!wentIdleAgain) {
       approved.cycle.stalled = true
@@ -86,16 +86,35 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
       return
     }
     const repaired = await latestStructured(client, state.sessionID)
+    if (repaired.error !== undefined) {
+      storeFixError(state, `fix pass failed: ${messageError(repaired.error)}`)
+      return
+    }
     const reparsed = parseFix(repaired)
     if (!("data" in reparsed)) {
-      approved.cycle.statusError = `status report failed validation twice: ${reparsed.issues}`
-      broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, error: approved.cycle.statusError })
+      storeFixError(state, `status report failed validation twice: ${reparsed.issues}`)
       return
     }
     storeStatuses(state, reparsed.data)
   } finally {
     events.stream.return(undefined)
   }
+}
+
+async function sendFixPrompt(client: OpenCodeClient, sessionID: string, prompt: string): Promise<void> {
+  const result = await client.session.promptAsync({
+    sessionID,
+    parts: [{ type: "text", text: prompt }],
+    format: { type: "json_schema", schema: fixJsonSchema },
+  })
+  if (result.error !== undefined) throw new Error(`sending fix prompt failed: ${JSON.stringify(result.error)}`)
+}
+
+function storeFixError(state: AppState, error: string): void {
+  const approved = activeApprovedCycle(state)
+  if (!approved) return
+  approved.cycle.statusError = error
+  broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, error })
 }
 
 function storeStatuses(state: AppState, output: FixOutput): void {
@@ -107,11 +126,19 @@ function storeStatuses(state: AppState, output: FixOutput): void {
   }
 }
 
-function parseFix(info: { structured?: unknown; error?: { name?: string } }): { data: FixOutput } | { issues: string } {
-  if (info.error !== undefined) return { issues: info.error.name ?? "error" }
+function parseFix(info: { structured?: unknown }): { data: FixOutput } | { issues: string } {
   const result = fixOutputSchema.safeParse(info.structured)
   if (result.success) return { data: result.data }
   return { issues: result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") }
+}
+
+interface MessageError {
+  name?: string
+  data?: { message?: string }
+}
+
+function messageError(error: MessageError): string {
+  return error.data?.message ?? error.name ?? "unknown model error"
 }
 
 // Resolves true when a session.idle event for this session arrives; false when
@@ -134,13 +161,21 @@ async function waitForIdle(
 }
 
 // The fix report is the structured output of the latest assistant message.
-async function latestStructured(client: OpenCodeClient, sessionID: string): Promise<{ structured?: unknown; error?: { name?: string } }> {
+async function latestStructured(client: OpenCodeClient, sessionID: string): Promise<{ structured?: unknown; error?: MessageError }> {
   const result = await client.session.messages({ sessionID, limit: 10 })
   if (result.error !== undefined) throw new Error(`reading session messages failed: ${JSON.stringify(result.error)}`)
   const messages = result.data ?? []
   for (let i = messages.length - 1; i >= 0; i--) {
     const info = messages[i]?.info
-    if (info?.role === "assistant") return { structured: info.structured, error: info.error === undefined ? undefined : { name: info.error.name } }
+    if (info?.role === "assistant") {
+      const error = info.error === undefined
+        ? undefined
+        : {
+            name: info.error.name,
+            data: "data" in info.error ? info.error.data as { message?: string } : undefined,
+          }
+      return { structured: info.structured, error }
+    }
   }
   return { structured: undefined }
 }

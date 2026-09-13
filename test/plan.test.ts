@@ -181,6 +181,7 @@ describe("plan flow", () => {
       sessionID: "ses_1",
       messageID: "msg_1",
       type: "text",
+      ignored: true,
       metadata: { source: "sideye", kind: "plan" },
     })
     const tuiPlan = stub.partUpdates[0]?.body.text

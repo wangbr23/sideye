@@ -24,7 +24,7 @@ afterEach(() => {
   stubs = []
 })
 
-async function stubOpencode(options: { structured?: unknown; idleDelayMs?: number; idleFor?: string; neverIdle?: boolean }) {
+async function stubOpencode(options: { structured?: unknown; error?: { name: string; data?: { message?: string } }; idleDelayMs?: number; idleFor?: string; neverIdle?: boolean }) {
   const prompts: string[] = []
   // multiple subscribers: leaked SDK SSE clients from prior tests can
   // reconnect to a recycled port — everyone gets the idle frame
@@ -69,7 +69,7 @@ async function stubOpencode(options: { structured?: unknown; idleDelayMs?: numbe
       }
       if (path.endsWith("/message")) {
         return Response.json([
-          { info: { id: "msg_1", sessionID: "ses_1", role: "assistant", structured: options.structured }, parts: [] },
+          { info: { id: "msg_1", sessionID: "ses_1", role: "assistant", structured: options.structured, error: options.error }, parts: [] },
         ])
       }
       return Response.json({ error: "unexpected path" }, { status: 404 })
@@ -198,4 +198,18 @@ describe("fix + status flow", () => {
     expect(state.submissions[0]?.stalled).toBeUndefined()
   })
 
+  test("model errors surface their message without a futile validation retry", async () => {
+    const stub = await stubOpencode({
+      error: { name: "UnknownError", data: { message: "Invalid prompt: malformed model history" } },
+    })
+    const state = stateReadyToFix()
+    const { runFixAndStatus } = await import("../src/server/fix.ts")
+    state.submissions[0]!.approvedPlan = 1
+
+    await runFixAndStatus(state, stub.client, { stallTimeoutMs: 1000 })
+
+    expect(stub.prompts).toHaveLength(1)
+    expect(state.submissions[0]?.statuses).toBeUndefined()
+    expect(state.submissions[0]?.statusError).toBe("fix pass failed: Invalid prompt: malformed model history")
+  })
 })
