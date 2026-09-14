@@ -4,6 +4,13 @@ import { launchReview } from "./launch.ts"
 import { createSessionClient } from "./session/client.ts"
 import type { ReviewTarget } from "./types.ts"
 
+function parseCommitTarget(raw?: string): ReviewTarget {
+  if (raw === undefined || raw === "") return { kind: "worktree" }
+  const match = raw.match(/\b([0-9a-f]{7,40})\b/i)
+  if (match) return { kind: "commit", sha: match[1] }
+  return { kind: "worktree" }
+}
+
 // OpenCode plugin entry (LLD §5a, HLD §3): registers the sideye_open_review
 // tool. The reviewer URL is shown as a TUI toast and returned to the agent.
 // The plugin context's client is the legacy SDK surface, and our session flows
@@ -19,13 +26,12 @@ export const SideyePlugin: Plugin = async (input) => {
           commit: tool.schema
             .string()
             .optional()
-            .describe("Commit sha to review (vs its first parent; merges are rejected). Omit to review the current worktree changes."),
+            .describe("REQUIRED when the user names a commit. The full or abbreviated commit SHA to review (e.g. \"a665a44\" or \"a665a44f3b...\"). Omit ONLY to review the current worktree changes."),
         },
         async execute(args, context) {
           // loud-and-early platform check (LLD §7) before any server exists
           await createSessionClient({ baseUrl: input.serverUrl.origin })
-          const target: ReviewTarget =
-            args.commit !== undefined && args.commit !== "" ? { kind: "commit", sha: args.commit } : { kind: "worktree" }
+          const target: ReviewTarget = parseCommitTarget(args.commit)
           const result = await launchReview({
             repoPath: context.worktree,
             sessionID: context.sessionID,

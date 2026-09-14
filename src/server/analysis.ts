@@ -6,8 +6,10 @@ import { analysisPrompt } from "../session/prompts.ts"
 import { broadcast } from "./sse.ts"
 
 // Thinking limit per analysis batch: a batch that exceeds this fails the round
-// analysis loudly (browser retry button) and stops the agent (LLD §5b).
-export const ANALYSIS_BATCH_TIMEOUT_MS = Number(process.env.SIDEYE_ANALYSIS_TIMEOUT_MS ?? 3 * 60_000)
+// analysis loudly (browser retry button) and stops the agent (LLD §5b). The
+// default gives the model room to read context and compose findings; a slow
+// batch is retryable from the browser.
+export const ANALYSIS_BATCH_TIMEOUT_MS = Number(process.env.SIDEYE_ANALYSIS_TIMEOUT_MS ?? 10 * 60_000)
 
 export function startAnalysis(state: AppState, round: Round, client: OpenCodeClient): void {
   // runAnalysis records the failure and sends a TUI toast. Do not write the

@@ -32,22 +32,28 @@ async function stubOpencode(options: {
   idleDelayMs?: number
   idleFor?: string
   neverIdle?: boolean
+  omitIdle?: boolean
 }) {
   const prompts: string[] = []
   // multiple subscribers: leaked SDK SSE clients from prior tests can
   // reconnect to a recycled port — everyone gets the idle frame
   const subscribers = new Set<ReadableStreamDefaultController<Uint8Array>>()
   const encoder = new TextEncoder()
+  let statusChecks = 0
   const notify = () => {
     for (const controller of subscribers) {
       try {
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify(options.eventError
-              ? { id: "e1", type: "session.error", properties: { sessionID: options.idleFor ?? "ses_1", error: options.eventError } }
-              : { id: "e1", type: "session.idle", properties: { sessionID: options.idleFor ?? "ses_1" } })}\n\n`,
-          ),
-        )
+        const sessionID = options.idleFor ?? "ses_1"
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          id: "m1",
+          type: "message.updated",
+          properties: { sessionID, info: { id: "msg_1", sessionID, role: "assistant", structured: options.structured, error: options.error } },
+        })}\n\n`))
+        if (!options.omitIdle) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(options.eventError
+            ? { id: "e1", type: "session.error", properties: { sessionID, error: options.eventError } }
+            : { id: "e1", type: "session.idle", properties: { sessionID } })}\n\n`))
+        }
       } catch {
         subscribers.delete(controller) // stream gone — stop notifying it
       }
@@ -59,6 +65,10 @@ async function stubOpencode(options: {
     fetch: async (req) => {
       const path = new URL(req.url).pathname
       if (path === "/global/health") return Response.json({ healthy: true, version: "stub" })
+      if (path === "/session/status") {
+        statusChecks++
+        return Response.json(options.omitIdle && statusChecks < 2 ? { ses_1: { type: "busy" } } : {})
+      }
       if (path === "/event") {
         const stream = new ReadableStream({
           start(controller) {
@@ -177,7 +187,7 @@ describe("fix + status flow", () => {
     const state = stateReadyToFix()
     const { runFixAndStatus } = await import("../src/server/fix.ts")
     state.submissions[0]!.approvedPlan = 1
-    await runFixAndStatus(state, stub.client, { stallTimeoutMs: 500 })
+    await runFixAndStatus(state, stub.client, { stallTimeoutMs: 500, statusPollIntervalMs: 1000 })
     // the foreign idle must not resolve the wait — the short stall budget fires
     expect(state.submissions[0]?.statuses).toBeUndefined()
     expect(state.submissions[0]?.stalled).toBe(true)
@@ -190,7 +200,7 @@ describe("fix + status flow", () => {
     const { runFixAndStatus } = await import("../src/server/fix.ts")
     state.submissions[0]!.approvedPlan = 1
     const started = Date.now()
-    await runFixAndStatus(state, stub.client, { stallTimeoutMs: 300 })
+    await runFixAndStatus(state, stub.client, { stallTimeoutMs: 300, statusPollIntervalMs: 1000 })
     expect(Date.now() - started).toBeLessThan(5000)
     expect(state.submissions[0]?.statuses).toBeUndefined()
     expect(state.submissions[0]?.stalled).toBe(true)
@@ -237,5 +247,18 @@ describe("fix + status flow", () => {
     expect(state.submissions[0]?.statuses).toBeUndefined()
     expect(state.submissions[0]?.stalled).toBeUndefined()
     expect(state.submissions[0]?.statusError).toBe("fix pass failed: Invalid prompt: malformed model history")
+  })
+
+  test("session status polling completes when the idle event is missed", async () => {
+    const stub = await stubOpencode({ structured: validStatuses, omitIdle: true, idleDelayMs: 20 })
+    const state = stateReadyToFix()
+    const { runFixAndStatus } = await import("../src/server/fix.ts")
+    state.submissions[0]!.approvedPlan = 1
+
+    await runFixAndStatus(state, stub.client, { stallTimeoutMs: 1000, statusPollIntervalMs: 25 })
+
+    expect(state.submissions[0]?.statuses).toEqual(validStatuses.statuses)
+    expect(state.submissions[0]?.stalled).toBeUndefined()
+    expect(state.submissions[0]?.statusError).toBeUndefined()
   })
 })

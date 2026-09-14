@@ -131,3 +131,13 @@ Append-only log of architecture decisions. One entry per decision, newest at the
 **Decision:** Shared and plugin execution paths contain background rejections only after the owning flow records state, broadcasts SSE, and sends a TUI toast; they never write directly to stdout or stderr. The standalone CLI may continue writing because it owns its terminal. `SIDEYE_NO_OPEN_BROWSER=1` disables automatic browser opening for headless/automated launches, and tests set it only around entry points that otherwise use production defaults.
 
 **Consequences:** Expected analysis failures no longer damage the TUI, while the browser and toast still report them. Normal user launches continue opening one browser; test runs create none. Plugin diagnostics that need persistence must use a future host logging API rather than reintroducing console output.
+
+## 2026-09-14 — Analysis default thinking limit raised from 3 to 10 minutes
+
+**Status:** Accepted (supersedes the 3-minute analysis default in the 2026-09-13 thinking-limits decision)
+
+**Context:** Live analysis batches repeatedly hit the three-minute cap before the model finished gathering context and composing findings. The abort itself behaved correctly, but the limit was too tight for real diffs, leaving reviewers with a retryable-but-annoying failure.
+
+**Decision:** The default `SIDEYE_ANALYSIS_TIMEOUT_MS` is now 10 minutes per batch, matching the plan limit. The environment override and the hard-abort/retry mechanism are unchanged.
+
+**Consequences:** Analysis runs tolerate slow models and larger diffs; a genuinely stuck batch still fails loudly within ten minutes and is retryable from the browser.
