@@ -50,3 +50,4 @@ Task format: `- [ ] \`T<n>\` <description> — <manual|agent>[, complexity: simp
 - [x] `T30` Remove empty duplicated unparsed-analysis panels and show explicit initial/analysis loading states — agent, complexity: simple
 - [x] `T31` Stop CLI e2e cleanup from leaking orphaned OpenCode servers by terminating launcher processes gracefully before a bounded hard-kill fallback — agent, complexity: simple
 - [x] `T32` Prevent TUI plan mirrors from corrupting fix-pass model history and surface exact fix failures in the browser — agent, complexity: simple
+- [x] `T33` Correct T32 against a live OpenCode 1.18.30 failure: put ignored plan mirrors on user messages and terminate fix waits immediately on `session.error` — agent, complexity: simple

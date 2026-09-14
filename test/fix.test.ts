@@ -9,8 +9,9 @@ import { fixPrompt } from "../src/session/prompts.ts"
 
 // Fix + status flow e2e over real HTTP: the stub OpenCode serves the health
 // check, prompt_async, the message list, and a live /event SSE stream that
-// delivers session.idle. Covers: statuses collected on idle, ignored idle for
-// other sessions, stall timeout, and double-invalid reports.
+// delivers session.idle or session.error. Covers: statuses collected on idle,
+// immediate provider failures, ignored events for other sessions, stall
+// timeout, and double-invalid reports.
 const validStatuses = {
   statuses: [
     { requestId: "r1", status: "addressed" as const, reason: "done", checks: [{ command: "bun test", passed: true, summary: "87 pass" }] },
@@ -24,7 +25,14 @@ afterEach(() => {
   stubs = []
 })
 
-async function stubOpencode(options: { structured?: unknown; error?: { name: string; data?: { message?: string } }; idleDelayMs?: number; idleFor?: string; neverIdle?: boolean }) {
+async function stubOpencode(options: {
+  structured?: unknown
+  error?: { name: string; data?: { message?: string } }
+  eventError?: { name: string; data?: { message?: string } }
+  idleDelayMs?: number
+  idleFor?: string
+  neverIdle?: boolean
+}) {
   const prompts: string[] = []
   // multiple subscribers: leaked SDK SSE clients from prior tests can
   // reconnect to a recycled port — everyone gets the idle frame
@@ -35,7 +43,9 @@ async function stubOpencode(options: { structured?: unknown; error?: { name: str
       try {
         controller.enqueue(
           encoder.encode(
-            `data: ${JSON.stringify({ id: "e1", type: "session.idle", properties: { sessionID: options.idleFor ?? "ses_1" } })}\n\n`,
+            `data: ${JSON.stringify(options.eventError
+              ? { id: "e1", type: "session.error", properties: { sessionID: options.idleFor ?? "ses_1", error: options.eventError } }
+              : { id: "e1", type: "session.idle", properties: { sessionID: options.idleFor ?? "ses_1" } })}\n\n`,
           ),
         )
       } catch {
@@ -210,6 +220,22 @@ describe("fix + status flow", () => {
 
     expect(stub.prompts).toHaveLength(1)
     expect(state.submissions[0]?.statuses).toBeUndefined()
+    expect(state.submissions[0]?.statusError).toBe("fix pass failed: Invalid prompt: malformed model history")
+  })
+
+  test("session.error surfaces immediately instead of becoming a stall", async () => {
+    const stub = await stubOpencode({
+      eventError: { name: "UnknownError", data: { message: "Invalid prompt: malformed model history" } },
+    })
+    const state = stateReadyToFix()
+    const { runFixAndStatus } = await import("../src/server/fix.ts")
+    state.submissions[0]!.approvedPlan = 1
+
+    await runFixAndStatus(state, stub.client, { stallTimeoutMs: 1000 })
+
+    expect(stub.prompts).toHaveLength(1)
+    expect(state.submissions[0]?.statuses).toBeUndefined()
+    expect(state.submissions[0]?.stalled).toBeUndefined()
     expect(state.submissions[0]?.statusError).toBe("fix pass failed: Invalid prompt: malformed model history")
   })
 })

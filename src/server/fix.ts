@@ -57,8 +57,12 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
   const events = await client.event.subscribe()
   try {
     await sendFixPrompt(client, state.sessionID, prompt)
-    const wentIdle = await waitForIdle(events, state.sessionID, stallTimeoutMs)
-    if (!wentIdle) {
+    const outcome = await waitForSessionOutcome(events, state.sessionID, stallTimeoutMs)
+    if (outcome.kind === "error") {
+      storeFixError(state, `fix pass failed: ${messageError(outcome.error)}`)
+      return
+    }
+    if (outcome.kind === "stalled") {
       approved.cycle.stalled = true
       broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, stalled: true })
       return
@@ -79,8 +83,12 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
       state.sessionID,
       `${prompt}\n\nYour previous report failed validation (${parsed.issues}). Reply again with corrected JSON matching the schema.`,
     )
-    const wentIdleAgain = await waitForIdle(events, state.sessionID, stallTimeoutMs)
-    if (!wentIdleAgain) {
+    const repairOutcome = await waitForSessionOutcome(events, state.sessionID, stallTimeoutMs)
+    if (repairOutcome.kind === "error") {
+      storeFixError(state, `fix pass failed: ${messageError(repairOutcome.error)}`)
+      return
+    }
+    if (repairOutcome.kind === "stalled") {
       approved.cycle.stalled = true
       broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, stalled: true })
       return
@@ -137,27 +145,32 @@ interface MessageError {
   data?: { message?: string }
 }
 
-function messageError(error: MessageError): string {
-  return error.data?.message ?? error.name ?? "unknown model error"
+function messageError(error: MessageError | undefined): string {
+  return error?.data?.message ?? error?.name ?? "unknown model error"
 }
 
-// Resolves true when a session.idle event for this session arrives; false when
-// the stream ends without one or the stall timeout fires (LLD §9: the session
-// stopped responding). Iterates with .next() rather than for-await so the
-// generator survives the wait — the repair pass waits on the same stream.
-async function waitForIdle(
+type SessionOutcome = { kind: "idle" } | { kind: "error"; error?: MessageError } | { kind: "stalled" }
+
+// Waits for this session to become idle or fail. Iterates with .next() rather
+// than for-await so the generator survives the wait — the repair pass waits on
+// the same stream. A provider error must surface immediately rather than fall
+// through to the 10-minute stall state.
+async function waitForSessionOutcome(
   events: Awaited<ReturnType<OpenCodeClient["event"]["subscribe"]>>,
   sessionID: string,
   timeoutMs: number,
-): Promise<boolean> {
-  const idle = (async () => {
+): Promise<SessionOutcome> {
+  const terminal = (async (): Promise<SessionOutcome> => {
     while (true) {
       const { value, done } = await events.stream.next()
-      if (done) return false
-      if (value.type === "session.idle" && value.properties.sessionID === sessionID) return true
+      if (done) return { kind: "stalled" }
+      if (value.type === "session.error" && value.properties.sessionID === sessionID) {
+        return { kind: "error", error: value.properties.error }
+      }
+      if (value.type === "session.idle" && value.properties.sessionID === sessionID) return { kind: "idle" }
     }
   })()
-  return Promise.race([idle, Bun.sleep(timeoutMs).then(() => false)])
+  return Promise.race([terminal, Bun.sleep(timeoutMs).then(() => ({ kind: "stalled" }) as const)])
 }
 
 // The fix report is the structured output of the latest assistant message.

@@ -18,10 +18,10 @@ function planFromPrompt(body: { parts: { text: string }[] }) {
   return response({ structured: { perRequest: [...text.matchAll(/--- request ([^ ]+) /g)].map((match) => ({ requestId: match[1]!, approach: "Split the loop and add a test.", affectedFiles: ["a.txt"] })) } })
 }
 
-function response(overrides: { id?: string; structured?: unknown; error?: { name: string } } = {}) {
+function response(overrides: { id?: string; parentID?: string; structured?: unknown; error?: { name: string } } = {}) {
   const id = overrides.id ?? "msg_1"
   return {
-    info: { id, sessionID: "ses_1", role: "assistant", structured: overrides.structured, error: overrides.error },
+    info: { id, parentID: overrides.parentID ?? `msg_user_${id}`, sessionID: "ses_1", role: "assistant", structured: overrides.structured, error: overrides.error },
     parts: [{ id: "p1", sessionID: "ses_1", messageID: id, type: "text", text: "raw" }],
   }
 }
@@ -176,10 +176,10 @@ describe("plan flow", () => {
     expect(stub.prompts[0]).toContain("origin: accepted-finding")
     expect(stub.prompts[0]).toContain("off-by-one in the loop")
     expect(stub.partUpdates).toHaveLength(1)
-    expect(stub.partUpdates[0]?.path).toMatch(/^\/session\/ses_1\/message\/msg_1\/part\/prt_sideye_plan_/)
+    expect(stub.partUpdates[0]?.path).toMatch(/^\/session\/ses_1\/message\/msg_user_msg_1\/part\/prt_sideye_plan_/)
     expect(stub.partUpdates[0]?.body).toMatchObject({
       sessionID: "ses_1",
-      messageID: "msg_1",
+      messageID: "msg_user_msg_1",
       type: "text",
       ignored: true,
       metadata: { source: "sideye", kind: "plan" },
@@ -216,7 +216,7 @@ describe("plan flow", () => {
     }
   })
 
-  test("a repaired plan is mirrored onto the repair response", async () => {
+  test("a repaired plan is mirrored onto the repair request's user message", async () => {
     const bad = { perRequest: [{ requestId: 42, approach: "x", affectedFiles: [] }] }
     const stub = await stubOpencode([
       response({ id: "msg_bad", structured: bad }),
@@ -235,7 +235,7 @@ describe("plan flow", () => {
     await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready")
     expect(stub.prompts).toHaveLength(2)
     expect(stub.partUpdates).toHaveLength(1)
-    expect(stub.partUpdates[0]?.path).toContain("/message/msg_1/part/")
+    expect(stub.partUpdates[0]?.path).toContain("/message/msg_user_msg_1/part/")
   })
 
   test("invalid plan output retries once, then fails loudly with a stored planError", async () => {

@@ -228,7 +228,7 @@ Honest limits of this scheme, stated rather than hidden: (a) the lockfile publis
 1. Reviewer hits Submit → `POST /api/submit` with explicit requests. The server adds comments and accepted findings that do not appear in any previously approved plan payload. Comment requests snapshot author + anchor; finding requests snapshot round + finding id; lesson candidates are built only from lesson-marked comments in this candidate payload. An empty candidate is rejected.
 2. The server creates a `SubmissionCycle` for the latest diff round and a planning `PlanVersion` v1. Browser selection of a historical round never changes the submission target. A cycle already exists for the latest round, or the preceding cycle has not captured its resulting round, so another `/api/submit` is rejected; pre-approval conversation uses revision instead.
 3. The plan prompt dispatches in the background. It contains the candidate payload and cumulative reviewer feedback, and structured output remains per-request approach + affected files. Semantic validation requires exactly one entry for every request id and rejects missing, duplicate, or unknown ids before the normal one-repair retry.
-4. The response returns immediately; versioned SSE updates all tabs. A validated plan becomes ready and is mirrored to the originating TUI as an `ignored` Markdown part: visible to the human, but excluded from later model-history replay. A failure stays on that version and is retryable without discarding earlier ready plans.
+4. The response returns immediately; versioned SSE updates all tabs. A validated plan becomes ready and is mirrored to the originating TUI as an `ignored` Markdown part on the plan request's **user** message: visible to the human, but excluded from later model-history replay. It must not be attached to the structured-output assistant message: OpenCode 1.18.30 replays ignored assistant text and produces an invalid provider part order. A failure stays on that version and is retryable without discarding earlier ready plans.
 
 **(d) Revise or approve a plan.**
 1. A ready plan exposes **Approve plan** and **Request changes**. Request changes accepts an optional written response and snapshots comments added since the candidate payload. At least one of those inputs is required.
@@ -239,7 +239,7 @@ Honest limits of this scheme, stated rather than hidden: (a) the lockfile publis
 
 **(e) Fix, capture, and start the next cycle.**
 1. Approval sends the edit-authorizing fix prompt with the approved version's payload, plan, cumulative reviewer feedback, and lesson candidates. It requires one `RequestStatus` per approved request plus relevant project checks.
-2. Server subscribes to the OpenCode event bus and watches `session.idle` for the originating session (10-minute stall timeout → UI reports the session stopped responding; review stays usable).
+2. Server subscribes to the OpenCode event bus and watches the originating session for `session.idle` or `session.error`. An error terminates the wait immediately and renders `Fix failed`; no terminal event within 10 minutes produces the stall state while the review stays usable.
 3. Statuses arrive as structured output → SSE `status.ready` → UI status card → round-consent card. Consent → `POST /api/rounds` → new capture → round N+1; prior comments and all plan/cycle history remain viewable.
 4. Once the new snapshot exists, Submit becomes available again. Its candidate contains typed requests plus comments/findings absent from every approved payload, including comments queued before approval or while the agent was editing. A queued comment keeps its original round anchor even when handled by a later cycle.
 5. Q&A remains separate: `POST /api/questions` → blocking prompt with the question + anchor context → answer returned in the HTTP response and pushed via SSE. Q&A does not create work items or plan revisions.
@@ -270,7 +270,7 @@ Four prompt templates in `session/prompts.ts`, each carrying the framing that di
 | Analysis (per batch) | blocking `session.prompt`, json_schema | `{ files[], hunks[], findings[] }` per §3 |
 | Q&A | blocking `session.prompt`, plain text | — |
 | Plan / plan revision | blocking `session.prompt`, json_schema | `{ perRequest[] }`; revision includes prior plan + cumulative reviewer feedback |
-| Fix + status | blocking prompt that authorizes editing; result awaited via `session.idle` event subscription | `{ statuses[] }` with check results |
+| Fix + status | asynchronous prompt that authorizes editing; result awaited via `session.idle` / `session.error` event subscription | `{ statuses[] }` with check results |
 
 zod schemas validate every structured response. Parse failure → one retry with the validation error appended → plain-text fallback shown in an "unparsed analysis" pane. Schemas stay small and flat per the HLD's reliability risk note.
 
@@ -283,7 +283,7 @@ Single page, no framework, no bundler. Layout: header (target, round selector, S
 - **Commenting:** gutter click on a hunk line → inline comment box (scope inferred inline; file header button → file scope; header → overall). "Mark as lesson" checkbox on the form sets `isLesson`. Comments posted through the open API carry an `author`, shown beside the comment.
 - **Findings** render as a visually distinct section, each with an "accept as request" control; accepted findings join the submit payload — never auto-submitted; the plan card labels each request's origin and author.
 - **Updates:** SSE push; on disconnect the client retries and on reconnect does a full `GET /api/state` refetch (no incremental sync to keep the client dumb). A persistent banner appears after repeated reconnect failures — consistent with "review dies with its launcher".
-- **Planning feedback (the submit → plan dead zone):** after submit the Status tab shows a live planning card until the plan lands — how many items are being planned, the sent items with origin/author tags, the linked session id, and a "can take a minute" note. The originating TUI shows the `sideye:` prompt immediately and the validated fix plan as an `ignored` Markdown assistant text part when ready; presentation-only text must not enter later model history. A failed plan renders the error with a Retry button; a review with no linked session says so instead of planning forever.
+- **Planning feedback (the submit → plan dead zone):** after submit the Status tab shows a live planning card until the plan lands — how many items are being planned, the sent items with origin/author tags, the linked session id, and a "can take a minute" note. The originating TUI shows the `sideye:` prompt immediately and the validated fix plan as an `ignored` Markdown part on that user message when ready; presentation-only text must not be attached to an assistant message or enter later model history. A failed plan renders the error with a Retry button; a review with no linked session says so instead of planning forever.
 - **Plan revisions:** a ready plan shows its version, covered item count, prior versions in read-only history, a response field, and **Request revised plan**. Comments newer than that version render as queued/not covered. Approval remains available by product decision, but its label explicitly states how many comments will remain queued. While a revision is pending, approval is disabled; if it fails, the earlier ready plan becomes approvable again.
 - **Cycle history:** after a new diff round is captured, prior plans and statuses remain read-only in the Status surface. The active action bar reflects only the latest round's cycle or the count of feedback ready to start one.
 - Large diffs: hunks render lazily (expand-on-scroll within a file); files render top-down.
@@ -302,7 +302,7 @@ Single page, no framework, no bundler. Layout: header (target, round selector, S
 | Comment arrives while planning | It is outside the immutable candidate payload and renders queued for the next revision/cycle |
 | Comment arrives after approval | It is never injected into the running fix; queued until the next captured diff round starts a cycle |
 | TUI plan mirror fails | Warning logged; canonical browser plan and approval flow remain available |
-| Fix model call fails | Exact model error stored and shown as `Fix failed`; do not retry a provider/history failure as malformed structured output |
+| Fix model call emits `session.error` | Exact model error stored and shown immediately as `Fix failed`; do not wait for `session.idle` or retry a provider/history failure as malformed structured output |
 | No linked session at submit | `sessionLinked: false` in the projection → Status tab states no plan can be drafted instead of an eternal planning state |
 | Merge commit as target | Rejected at launch with message |
 | `session.idle` never fires | 10-min stall timeout → UI states the session stopped responding; state remains reviewable |
@@ -319,7 +319,7 @@ Single page, no framework, no bundler. Layout: header (target, round selector, S
 - `submissions.test.ts` — initial and follow-up candidate selection; source identities prevent approved comments/findings from being resubmitted; candidate-only items remain eligible; lesson candidates match the candidate payload; approval/sequencing invariants.
 - `auth.test.ts` — real `Bun.serve` on an ephemeral port: control routes (submit/approve/rounds) without the reviewer token → 401, with it → 200; open routes (state, comments, questions) work without a token; `POST /api/comments` without `author` → 400. Server never writes review data to disk (lockfile contents asserted as metadata-only).
 - `schemas.test.ts` — sample structured outputs validate against zod schemas; malformed input routes to fallback.
-- `plan.test.ts` — asynchronous submit/plan/revise/retry lifecycle; cumulative feedback and payload snapshots; exact request-id validation; prior ready plan survives revised-plan failure; validated plan Markdown identifies the cycle/version, is added to the correct assistant message, and is ignored during model-history replay.
+- `plan.test.ts` — asynchronous submit/plan/revise/retry lifecycle; cumulative feedback and payload snapshots; exact request-id validation; prior ready plan survives revised-plan failure; validated plan Markdown identifies the cycle/version and is added as ignored text to the successful response's parent user message, never the assistant message.
 - `routes.test.ts` — control auth plus stale cycle/version rejection, one in-flight plan guard, explicit approval with queued comments, and revision-with-no-input rejection.
 - `rounds.test.ts` — approved cycle captures the next diff round; queued round-1 comments start the round-2 cycle; prior cycle/plan/status history remains projected.
 

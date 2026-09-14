@@ -14,7 +14,7 @@ export const PLAN_TIMEOUT_MS = Number(process.env.SIDEYE_PLAN_TIMEOUT_MS ?? 10 *
 // the submit response returns immediately and the UI shows a live planning
 // state; plan.pending / plan.ready / plan.failed events keep every tab
 // current. A validated plan is also mirrored as presentation-only Markdown
-// onto its assistant message so the originating TUI can render it. Validation
+// onto its parent user message so the originating TUI can render it. Validation
 // follows the
 // analysis pattern: one repair retry with the issues appended, then a loud
 // failure stored on the submission (retryable via POST /api/plan/retry) — the
@@ -62,12 +62,12 @@ export async function runPlan(state: AppState, client: OpenCodeClient, cycleN: n
     }
     if (!("data" in reparsed)) throw new Error("unreachable invalid repaired plan")
     const plan = storePlan(state, version, reparsed.data, cycleN)
-    await mirrorPlanToTui(state, client, retry.info.id, plan, version)
+    await mirrorPlanToTui(state, client, retry.info.parentID, plan, version)
     return plan
   }
   if (!("data" in parsed)) throw new Error("unreachable invalid plan")
   const plan = storePlan(state, version, parsed.data, cycleN)
-  await mirrorPlanToTui(state, client, first.info.id, plan, version)
+  await mirrorPlanToTui(state, client, first.info.parentID, plan, version)
   return plan
 }
 
@@ -86,23 +86,23 @@ function coverageIssues(version: PlanVersion, output: PlanOutput): string | unde
     : undefined
 }
 
-async function mirrorPlanToTui(state: AppState, client: OpenCodeClient, messageID: string, plan: Plan, version: PlanVersion): Promise<void> {
+async function mirrorPlanToTui(state: AppState, client: OpenCodeClient, userMessageID: string, plan: Plan, version: PlanVersion): Promise<void> {
   const partID = `prt_sideye_plan_${crypto.randomUUID().replaceAll("-", "")}`
   const now = Date.now()
   try {
     const result = await client.part.update({
       sessionID: state.sessionID,
-      messageID,
+      messageID: userMessageID,
       partID,
       part: {
         id: partID,
         sessionID: state.sessionID,
-        messageID,
+        messageID: userMessageID,
         type: "text",
         text: renderPlanMarkdown(version, plan),
-        // OpenCode replays non-ignored assistant parts into later model calls.
-        // This text follows StructuredOutput and is only for TUI presentation;
-        // replaying it makes the provider reject the message-part ordering.
+        // OpenCode 1.18.30 excludes ignored user text from model history but
+        // replays ignored assistant text. Keep this presentation-only plan on
+        // the plan request's user message so the next prompt remains valid.
         ignored: true,
         time: { start: now, end: now },
         metadata: { source: "sideye", kind: "plan" },
