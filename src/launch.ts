@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { buildHandlers } from "./server/routes.ts"
 import { generateReviewerToken, startReviewServer, type RunningReviewServer } from "./server/http.ts"
-import { runAnalysis } from "./server/analysis.ts"
+import { startAnalysis } from "./server/analysis.ts"
 import { captureRound, createState } from "./server/state.ts"
 import type { AppState, ReviewTarget } from "./types.ts"
 import type { OpenCodeClient } from "./session/client.ts"
@@ -26,7 +26,7 @@ export interface LaunchOptions {
   // linked OpenCode session client — round-1 analysis, Q&A, submit/plan/fix
   // flows all prompt through it. Optional: tests launch without a session.
   client?: OpenCodeClient
-  openBrowser?: boolean // default true — best-effort, failure never blocks the launch
+  openBrowser?: boolean // default true; SIDEYE_NO_OPEN_BROWSER=1 also suppresses the best-effort opener
   // how the launcher hosts the review: "cli" processes exit when the review
   // ends; "plugin" processes only stop the in-process server.
   mode?: "cli" | "plugin"
@@ -99,9 +99,7 @@ export async function launchReview(options: LaunchOptions): Promise<LaunchResult
   // other session flow — the Analysis/Findings tabs fill via analysis.update
   // SSE. Later rounds are analyzed by POST /api/rounds on consented capture.
   if (options.client) {
-    void runAnalysis(state, round, options.client).catch((err) => {
-      console.error("analysis failed for round", round.n, err)
-    })
+    startAnalysis(state, round, options.client)
   }
 
   const server = startReviewServer({
@@ -123,7 +121,7 @@ export async function launchReview(options: LaunchOptions): Promise<LaunchResult
   writeLockfile(lock)
   active.set(options.repoPath, { server, state, url, onEnd: options.onEnd })
   startSweeper(options.repoPath)
-  if (options.openBrowser !== false) openBrowserBestEffort(url)
+  if (options.openBrowser !== false && process.env.SIDEYE_NO_OPEN_BROWSER !== "1") openBrowserBestEffort(url)
   return { url, port: server.port, reused: false }
 }
 

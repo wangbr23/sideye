@@ -1,4 +1,4 @@
-import { describe, expect, test, afterEach, spyOn } from "bun:test"
+import { describe, expect, test, afterEach } from "bun:test"
 import { createState } from "../src/server/state.ts"
 import { buildHandlers } from "../src/server/routes.ts"
 import { startReviewServer } from "../src/server/http.ts"
@@ -29,6 +29,7 @@ function response(overrides: { id?: string; parentID?: string; structured?: unkn
 async function stubOpencode(responses: (unknown | ((body: { parts: { text: string }[] }) => unknown))[], options: { partUpdateStatus?: number } = {}) {
   const prompts: string[] = []
   const partUpdates: { path: string; body: Record<string, unknown> }[] = []
+  const toasts: { message?: string }[] = []
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -41,6 +42,10 @@ async function stubOpencode(responses: (unknown | ((body: { parts: { text: strin
         const status = options.partUpdateStatus ?? 200
         return status === 200 ? Response.json(body) : Response.json({ error: "part update failed" }, { status })
       }
+      if (path === "/tui/show-toast") {
+        toasts.push((await req.json()) as { message?: string })
+        return Response.json(true)
+      }
       if (!path.endsWith("/message") && !path.endsWith("/prompt_async")) {
         return Response.json({ error: "unexpected path" }, { status: 404 })
       }
@@ -51,7 +56,7 @@ async function stubOpencode(responses: (unknown | ((body: { parts: { text: strin
     },
   })
   const client = await createSessionClient({ baseUrl: `http://127.0.0.1:${server.port}`, healthTimeoutMs: 1000 })
-  return { client, prompts, partUpdates, stop: () => server.stop(true) }
+  return { client, prompts, partUpdates, toasts, stop: () => server.stop(true) }
 }
 
 let stubs: { stop(): void }[] = []
@@ -193,27 +198,22 @@ describe("plan flow", () => {
   })
 
   test("a TUI mirror failure does not invalidate the browser plan", async () => {
-    const warn = spyOn(console, "warn").mockImplementation(() => {})
-    try {
-      const stub = await stubOpencode([planFromPrompt], { partUpdateStatus: 500 })
-      const state = stateForSubmit()
-      const server = await startWithClient(state, stub.client)
-      const base = `http://127.0.0.1:${server.port}`
+    const stub = await stubOpencode([planFromPrompt], { partUpdateStatus: 500 })
+    const state = stateForSubmit()
+    const server = await startWithClient(state, stub.client)
+    const base = `http://127.0.0.1:${server.port}`
 
-      const res = await fetch(`${base}/api/submit`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ requests: ["split the loop"] }),
-      })
+    const res = await fetch(`${base}/api/submit`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ requests: ["split the loop"] }),
+    })
 
-      expect(res.status).toBe(200)
-      await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready")
-      expect(state.submissions[0]?.plans[0]?.error).toBeUndefined()
-      expect(stub.partUpdates).toHaveLength(1)
-      expect(warn).toHaveBeenCalledTimes(1)
-    } finally {
-      warn.mockRestore()
-    }
+    expect(res.status).toBe(200)
+    await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready")
+    await waitUntil(() => stub.toasts.some((toast) => toast.message?.includes("could not be displayed")))
+    expect(state.submissions[0]?.plans[0]?.error).toBeUndefined()
+    expect(stub.partUpdates).toHaveLength(1)
   })
 
   test("a repaired plan is mirrored onto the repair request's user message", async () => {

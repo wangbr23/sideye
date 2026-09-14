@@ -4,7 +4,7 @@ import { sseResponse, broadcast } from "./sse.ts"
 import { addComment, deleteComment, acceptFinding, askQuestion, captureConsentedRound } from "./state.ts"
 import { approvePlanVersion, retryPlan, revisePlan, startCycle } from "./submissions.ts"
 import { startFixAndStatus } from "./fix.ts"
-import { runAnalysis } from "./analysis.ts"
+import { startAnalysis } from "./analysis.ts"
 import { startPlanning } from "./plan.ts"
 import type { OpenCodeClient } from "../session/client.ts"
 
@@ -109,11 +109,7 @@ export function buildHandlers(state: AppState, deps: RouteDependencies = {}): Re
       if (!result.ok) return Response.json({ error: result.error }, { status: 400 })
       broadcast(state, "round.prompt", { round: result.round.n })
       // new round → new analysis, in the background like the fix flow
-      if (deps.client) {
-        void runAnalysis(state, result.round, deps.client).catch((err) => {
-          console.error("analysis failed for round", result.round.n, err)
-        })
-      }
+      if (deps.client) startAnalysis(state, result.round, deps.client)
       return Response.json({ round: result.round })
     },
     "POST /api/analysis/retry": async (req) => {
@@ -131,9 +127,7 @@ export function buildHandlers(state: AppState, deps: RouteDependencies = {}): Re
       if (!deps.client) {
         return Response.json({ error: "OpenCode session is not linked" }, { status: 500 })
       }
-      void runAnalysis(state, state.rounds.find((item) => item.n === round)!, deps.client).catch((err) => {
-        console.error("analysis retry failed for round", round, err)
-      })
+      startAnalysis(state, state.rounds.find((item) => item.n === round)!, deps.client)
       return Response.json({ started: true, round })
     },
     "POST /api/questions": async (req) => {

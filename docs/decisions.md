@@ -121,3 +121,13 @@ Append-only log of architecture decisions. One entry per decision, newest at the
 **Decision:** Attach each presentation-only plan mirror as an ignored text part to the successful plan response's parent user message, never to the structured-output assistant message. During a fix pass, treat a matching `session.error` as a terminal result alongside `session.idle`; preserve its nested provider message and publish `status.ready` immediately.
 
 **Consequences:** The TUI retains a readable plan while OpenCode omits it from subsequent model calls; approved fixes no longer inherit an invalid tool/text part order. Provider failures render as `Fix failed` immediately rather than `Agent working` followed by a stall. This relies on verified OpenCode 1.18.30 user-part behavior and requires a real follow-up model call in manual acceptance testing whenever the platform version changes.
+
+## 2026-09-14 — In-process plugin paths never write to the TUI terminal
+
+**Status:** Accepted
+
+**Context:** A Sideye analysis batch hit its three-minute limit and correctly updated browser state, but the launcher's redundant background `console.error` printed Bun's source excerpt and stack directly into the OpenCode process's terminal. That output bypassed the alternate-screen renderer and visibly corrupted the TUI. Automated plugin and CLI tests also used the production browser opener, leaving several dead tabs after their ephemeral review servers stopped.
+
+**Decision:** Shared and plugin execution paths contain background rejections only after the owning flow records state, broadcasts SSE, and sends a TUI toast; they never write directly to stdout or stderr. The standalone CLI may continue writing because it owns its terminal. `SIDEYE_NO_OPEN_BROWSER=1` disables automatic browser opening for headless/automated launches, and tests set it only around entry points that otherwise use production defaults.
+
+**Consequences:** Expected analysis failures no longer damage the TUI, while the browser and toast still report them. Normal user launches continue opening one browser; test runs create none. Plugin diagnostics that need persistence must use a future host logging API rather than reintroducing console output.

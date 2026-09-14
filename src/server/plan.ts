@@ -109,10 +109,10 @@ async function mirrorPlanToTui(state: AppState, client: OpenCodeClient, userMess
       },
     })
     if (result.error !== undefined) throw result.error
-  } catch (err) {
+  } catch {
     // The browser plan remains usable if this secondary presentation surface
     // is unavailable or changes in a future OpenCode release.
-    console.warn("Sideye could not render the plan in the OpenCode TUI:", err)
+    void showToast(client, "Fix plan is ready in the review browser, but its TUI copy could not be displayed.", "error")
   }
 }
 

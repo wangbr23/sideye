@@ -10,7 +10,8 @@ import { stopReview } from "../src/launch.ts"
 // Plugin entry e2e: SideyePlugin initialized with a plugin-like input whose
 // serverUrl points at a stub OpenCode (health + TUI toast). Executing the
 // registered tool launches a real review bound to the tool context's session
-// and worktree, returns the reviewer URL, and fires the toast.
+// and worktree, returns the reviewer URL, and fires the toast. runTool disables
+// the OS browser opener so ephemeral test servers do not leave dead tabs.
 const lockPathFor = (repoPath: string) =>
   join(tmpdir(), "sideye", `${createHash("sha256").update(repoPath).digest("hex")}.json`)
 
@@ -49,7 +50,14 @@ async function runTool(
   const registered = hooks.tool?.sideye_open_review
   if (registered === undefined) throw new Error("sideye_open_review not registered")
   const execute = registered.execute as unknown as ExecuteFn
-  return (await execute(args, context)) as string
+  const previous = process.env.SIDEYE_NO_OPEN_BROWSER
+  process.env.SIDEYE_NO_OPEN_BROWSER = "1"
+  try {
+    return (await execute(args, context)) as string
+  } finally {
+    if (previous === undefined) delete process.env.SIDEYE_NO_OPEN_BROWSER
+    else process.env.SIDEYE_NO_OPEN_BROWSER = previous
+  }
 }
 
 function pluginInput(port: number): Parameters<typeof SideyePlugin>[0] {

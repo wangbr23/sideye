@@ -216,7 +216,7 @@ Honest limits of this scheme, stated rather than hidden: (a) the lockfile publis
 ## 5. Flow sequences
 
 **(a) Launch.**
-`/sideye [commit]` (markdown command template) instructs the agent to call the registered tool `sideye_open_review { commit? }`. The tool handler resolves repo path from the plugin input, optional sha, then `launch.ts`: check lockfile → start server (or reuse) → build the reviewer URL (`?reviewer=<token>`) → best-effort `open` the browser → return URL to the agent, which shows it via `tui.showToast`. CLI flow is the same except the session: `sideye review [commit]` connects to the running OpenCode instance (or boots one), creates a **dedicated session** via `session.create`, and uses that session ID for all prompts. Both flows pass `sessionID` + `repoPath` into the server state at construction.
+`/sideye [commit]` (markdown command template) instructs the agent to call the registered tool `sideye_open_review { commit? }`. The tool handler resolves repo path from the plugin input, optional sha, then `launch.ts`: check lockfile → start server (or reuse) → build the reviewer URL (`?reviewer=<token>`) → best-effort `open` the browser → return URL to the agent, which shows it via `tui.showToast`. `SIDEYE_NO_OPEN_BROWSER=1` suppresses only the automatic opener for headless and automated runs. CLI flow is the same except the session: `sideye review [commit]` connects to the running OpenCode instance (or boots one), creates a **dedicated session** via `session.create`, and uses that session ID for all prompts. Both flows pass `sessionID` + `repoPath` into the server state at construction.
 
 **(b) Review open → analysis.**
 1. Capture the target (§6) → parse → freeze as round 1.
@@ -263,6 +263,8 @@ Empty diff (clean worktree) is allowed: round 1 has no files; overall comments a
 
 `createOpencodeClient` (plugin flow: client handed to the plugin; CLI flow: created after connecting). A health check at startup fails loudly — per the HLD, platform drift should surface early, not degrade silently.
 
+The plugin runs inside OpenCode's terminal process. Shared/plugin paths never write to stdout or stderr because direct console output bypasses the TUI renderer and corrupts its alternate screen. Background failures are contained after their state/SSE updates and surfaced through `tui.showToast`; only the standalone CLI writes to its own terminal.
+
 Four prompt templates in `session/prompts.ts`, each carrying the framing that diff content *and reviewer comments* are quoted data, never instructions — comments arrive from any local agent, so they are always included with their author label and round anchor:
 
 | Template | Mode | Structured schema |
@@ -301,7 +303,8 @@ Single page, no framework, no bundler. Layout: header (target, round selector, S
 | Revision requested with no response and no new comments | `400`; current plan remains unchanged |
 | Comment arrives while planning | It is outside the immutable candidate payload and renders queued for the next revision/cycle |
 | Comment arrives after approval | It is never injected into the running fix; queued until the next captured diff round starts a cycle |
-| TUI plan mirror fails | Warning logged; canonical browser plan and approval flow remain available |
+| TUI plan mirror fails | TUI error toast; canonical browser plan and approval flow remain available |
+| Background analysis fails | Failed state + SSE + TUI toast; caller contains the rejection without writing a stack trace to the TUI terminal |
 | Fix model call emits `session.error` | Exact model error stored and shown immediately as `Fix failed`; do not wait for `session.idle` or retry a provider/history failure as malformed structured output |
 | No linked session at submit | `sessionLinked: false` in the projection → Status tab states no plan can be drafted instead of an eternal planning state |
 | Merge commit as target | Rejected at launch with message |
@@ -309,6 +312,7 @@ Single page, no framework, no bundler. Layout: header (target, round selector, S
 | Launcher process dies | Review ends (process-local by design); browser shows reconnect banner |
 | OpenCode unreachable at launch | Hard fail with message (loud-and-early rule) |
 | Second launch, same repo | Reuse via lockfile (§4) |
+| Headless/test launch | `SIDEYE_NO_OPEN_BROWSER=1` returns/prints the URL without invoking the OS browser opener |
 | Unattributed comment/question | Rejected `400` — `author` required (attribution over auth) |
 
 ## 10. Test mapping (Bun test runner)
@@ -319,6 +323,7 @@ Single page, no framework, no bundler. Layout: header (target, round selector, S
 - `submissions.test.ts` — initial and follow-up candidate selection; source identities prevent approved comments/findings from being resubmitted; candidate-only items remain eligible; lesson candidates match the candidate payload; approval/sequencing invariants.
 - `auth.test.ts` — real `Bun.serve` on an ephemeral port: control routes (submit/approve/rounds) without the reviewer token → 401, with it → 200; open routes (state, comments, questions) work without a token; `POST /api/comments` without `author` → 400. Server never writes review data to disk (lockfile contents asserted as metadata-only).
 - `schemas.test.ts` — sample structured outputs validate against zod schemas; malformed input routes to fallback.
+- `analysis.test.ts` — structured parsing/batching plus background failure containment after state and toast updates.
 - `plan.test.ts` — asynchronous submit/plan/revise/retry lifecycle; cumulative feedback and payload snapshots; exact request-id validation; prior ready plan survives revised-plan failure; validated plan Markdown identifies the cycle/version and is added as ignored text to the successful response's parent user message, never the assistant message.
 - `routes.test.ts` — control auth plus stale cycle/version rejection, one in-flight plan guard, explicit approval with queued comments, and revision-with-no-input rejection.
 - `rounds.test.ts` — approved cycle captures the next diff round; queued round-1 comments start the round-2 cycle; prior cycle/plan/status history remains projected.

@@ -94,7 +94,12 @@ describe("sideye review CLI", () => {
 })
 
 function start(...args: string[]): Bun.Subprocess {
-  const proc = spawn(["bun", CLI, ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" })
+  const proc = spawn(["bun", CLI, ...args], {
+    cwd: repo,
+    env: { ...process.env, SIDEYE_NO_OPEN_BROWSER: "1" },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
   processes.push(proc)
   return proc
 }

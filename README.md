@@ -55,6 +55,7 @@ Review running: http://127.0.0.1:<port>/?reviewer=<token>
 ```
 
 Keep the terminal open — the review lives in that process and ends when it exits.
+Set `SIDEYE_NO_OPEN_BROWSER=1` to print the reviewer URL without opening it automatically, such as in headless or automated runs.
 
 ## Launch path 2 — OpenCode plugin
 

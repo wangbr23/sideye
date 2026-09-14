@@ -9,6 +9,12 @@ import { broadcast } from "./sse.ts"
 // analysis loudly (browser retry button) and stops the agent (LLD §5b).
 export const ANALYSIS_BATCH_TIMEOUT_MS = Number(process.env.SIDEYE_ANALYSIS_TIMEOUT_MS ?? 3 * 60_000)
 
+export function startAnalysis(state: AppState, round: Round, client: OpenCodeClient): void {
+  // runAnalysis records the failure and sends a TUI toast. Do not write the
+  // caught error to stdout/stderr: plugin launches share the TUI's terminal.
+  void runAnalysis(state, round, client).catch(() => {})
+}
+
 // Analysis pipeline (LLD §5b, §7): one blocking session.prompt per batch with
 // json_schema structured output. Per batch: zod validation → one repair retry
 // with the validation error appended → plain-text fallback. Batch results merge

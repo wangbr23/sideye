@@ -2,7 +2,7 @@ import { describe, expect, test, afterEach } from "bun:test"
 import { createState } from "../src/server/state.ts"
 import { buildHandlers } from "../src/server/routes.ts"
 import { startReviewServer } from "../src/server/http.ts"
-import { runAnalysis } from "../src/server/analysis.ts"
+import { runAnalysis, startAnalysis } from "../src/server/analysis.ts"
 import { createSessionClient } from "../src/session/client.ts"
 import type { AppState, DiffFile, Round } from "../src/types.ts"
 import type { OpenCodeClient } from "../src/session/client.ts"
@@ -249,6 +249,30 @@ describe("runAnalysis", () => {
     const { round, state } = makeRound([makeFile("a.txt")])
 
     await expect(runAnalysis(state, round, stubs[0]!.client)).rejects.toThrow(/analysis prompt failed/)
+    expect(state.analysisStatus.get(1)).toBe("failed")
+  })
+
+  test("background analysis contains failures after updating state", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (req) => {
+        if (new URL(req.url).pathname === "/global/health") return Response.json({ healthy: true, version: "stub" })
+        return new Response("boom", { status: 500 })
+      },
+    })
+    const stub = {
+      client: await createSessionClient({ baseUrl: `http://127.0.0.1:${server.port}`, healthTimeoutMs: 1000 }),
+      requests: [],
+      toasts: [],
+      stop: () => server.stop(true),
+    }
+    stubs.push(stub)
+    const { round, state } = makeRound([makeFile("a.txt")])
+
+    startAnalysis(state, round, stub.client)
+    for (let i = 0; i < 50 && state.analysisStatus.get(1) !== "failed"; i++) await Bun.sleep(10)
+
     expect(state.analysisStatus.get(1)).toBe("failed")
   })
 })
