@@ -1,3 +1,5 @@
 .claude/settings.local.json
 node_modules/
 graft/
+# local opencode install of this plugin (symlink to src/index.ts + command copies)
+.opencode/
