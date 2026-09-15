@@ -4,6 +4,7 @@ import { fixJsonSchema, fixOutputSchema, type FixOutput } from "../session/schem
 import { fixPrompt } from "../session/prompts.ts"
 import { broadcast } from "./sse.ts"
 import { activeApprovedCycle } from "./submissions.ts"
+import { debugLog } from "./debuglog.ts"
 
 export const FIX_STALL_TIMEOUT_MS = 10 * 60 * 1000
 
@@ -31,6 +32,7 @@ export function startFixAndStatus(state: AppState, client: OpenCodeClient, cycle
 }
 
 export async function runFixAndStatus(state: AppState, client: OpenCodeClient, options: FixOptions = {}): Promise<void> {
+  debugLog("fix.start", { sessionID: state.sessionID, cycleN: options.cycleN, versionN: options.versionN })
   const approved = activeApprovedCycle(state)
   if (!approved || (options.cycleN !== undefined && (approved.cycle.n !== options.cycleN || approved.plan.n !== options.versionN))) {
     throw new Error("fix flow requires an approved plan")
@@ -54,12 +56,15 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
     })),
   })
 
+  debugLog("fix.promptBuilt", { promptChars: prompt.length })
   const stallTimeoutMs = options.stallTimeoutMs ?? FIX_STALL_TIMEOUT_MS
   const statusPollIntervalMs = options.statusPollIntervalMs ?? 1000
   const events = await client.event.subscribe()
   try {
     await sendFixPrompt(client, state.sessionID, prompt)
+    debugLog("fix.promptSent", {})
     const outcome = await waitForSessionOutcome(events, client, state.sessionID, stallTimeoutMs, statusPollIntervalMs)
+    debugLog("fix.outcome", { phase: "initial", ...describeOutcome(outcome) })
     if (outcome.kind === "error") {
       storeFixError(state, `fix pass failed: ${messageError(outcome.error)}`)
       return
@@ -80,12 +85,14 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
       return
     }
     // one repair pass, same as every structured flow (LLD §7)
+    debugLog("fix.repairSend", {})
     await sendFixPrompt(
       client,
       state.sessionID,
       `${prompt}\n\nYour previous report failed validation (${parsed.issues}). Reply again with corrected JSON matching the schema.`,
     )
     const repairOutcome = await waitForSessionOutcome(events, client, state.sessionID, stallTimeoutMs, statusPollIntervalMs)
+    debugLog("fix.outcome", { phase: "repair", ...describeOutcome(repairOutcome) })
     if (repairOutcome.kind === "error") {
       storeFixError(state, `fix pass failed: ${messageError(repairOutcome.error)}`)
       return
@@ -117,11 +124,13 @@ async function sendFixPrompt(client: OpenCodeClient, sessionID: string, prompt: 
     parts: [{ type: "text", text: prompt }],
     format: { type: "json_schema", schema: fixJsonSchema },
   })
+  debugLog("fix.send", { sessionID, error: result.error !== undefined ? JSON.stringify(result.error).slice(0, 500) : null })
   if (result.error !== undefined) throw new Error(`sending fix prompt failed: ${JSON.stringify(result.error)}`)
 }
 
 function storeFixError(state: AppState, error: string): void {
   const approved = activeApprovedCycle(state)
+  debugLog("fix.statusError", { error })
   if (!approved) return
   approved.cycle.statusError = error
   broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, error })
@@ -130,6 +139,7 @@ function storeFixError(state: AppState, error: string): void {
 function storeStatuses(state: AppState, output: FixOutput): void {
   const statuses: RequestStatus[] = output.statuses
   const approved = activeApprovedCycle(state)
+  debugLog("fix.statuses", { count: statuses.length })
   if (approved) {
     approved.cycle.statuses = statuses
     broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, statuses })
@@ -138,8 +148,27 @@ function storeStatuses(state: AppState, output: FixOutput): void {
 
 function parseFix(info: { structured?: unknown }): { data: FixOutput } | { issues: string } {
   const result = fixOutputSchema.safeParse(info.structured)
-  if (result.success) return { data: result.data }
-  return { issues: result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") }
+  if (result.success) {
+    debugLog("fix.parse", { ok: true })
+    return { data: result.data }
+  }
+  const issues = result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")
+  debugLog("fix.parse", { ok: false, issues, structuredType: typeof info.structured })
+  return { issues }
+}
+
+// TEMPORARY (diagnostic): summarizes which race arm won and what it saw.
+function describeOutcome(outcome: SessionOutcome): Record<string, unknown> {
+  if (outcome.kind === "idle") {
+    return {
+      kind: outcome.kind,
+      hasReport: "report" in outcome,
+      structuredDefined: outcome.report?.structured !== undefined,
+      reportError: outcome.report?.error ?? null,
+    }
+  }
+  if (outcome.kind === "error") return { kind: "error", error: outcome.error ?? null }
+  return { kind: "stalled" }
 }
 
 interface MessageError {
@@ -166,14 +195,30 @@ async function waitForSessionOutcome(
   pollIntervalMs: number,
 ): Promise<SessionOutcome> {
   let report: StructuredReport | undefined
+  let seenBusy = false
+  const startedAt = Date.now()
+  const elapsed = () => Date.now() - startedAt
   const terminal = (async (): Promise<SessionOutcome> => {
     while (true) {
       const { value, done } = await events.stream.next()
-      // A dropped SSE connection is not evidence that the agent stalled. The
-      // authoritative status poll can still observe completion.
-      if (done) return await new Promise<SessionOutcome>(() => {})
+      if (done) {
+        debugLog("wait.streamDone", { sessionID, elapsedMs: elapsed() })
+        return await new Promise<SessionOutcome>(() => {})
+      }
+      // TEMPORARY (diagnostic): event-level evidence of what resolves the wait.
+      const props = value.properties as
+        | { sessionID?: string; info?: { id?: string; role?: string; finish?: string; structured?: unknown; error?: { name?: string } } }
+        | undefined
+      debugLog("wait.event", { type: value.type, eventSession: props?.sessionID, match: props?.sessionID === sessionID, elapsedMs: elapsed() })
       if (value.type === "message.updated" && value.properties.sessionID === sessionID && value.properties.info.role === "assistant") {
         const info = value.properties.info
+        debugLog("wait.event.message", {
+          messageID: info.id,
+          finish: info.finish ?? null,
+          structuredDefined: info.structured !== undefined,
+          errorName: info.error?.name ?? null,
+          elapsedMs: elapsed(),
+        })
         report = {
           structured: info.structured,
           error: info.error === undefined
@@ -182,46 +227,66 @@ async function waitForSessionOutcome(
         }
       }
       if (value.type === "session.error" && value.properties.sessionID === sessionID) {
+        debugLog("wait.terminalError", { sessionID, elapsedMs: elapsed() })
         return { kind: "error", error: value.properties.error }
       }
-      if (value.type === "session.idle" && value.properties.sessionID === sessionID) return { kind: "idle", report }
+      if (value.type === "session.idle" && value.properties.sessionID === sessionID) {
+        debugLog("wait.terminalIdle", {
+          sessionID,
+          elapsedMs: elapsed(),
+          seenBusy,
+          reportSeen: report !== undefined,
+          structuredDefined: report?.structured !== undefined,
+          reportError: report?.error ?? null,
+        })
+        return { kind: "idle", report }
+      }
     }
   })()
   const polledIdle = (async (): Promise<SessionOutcome> => {
-    let seenBusy = false
     await Bun.sleep(pollIntervalMs)
     while (true) {
       try {
         const status = await client.session.status()
         const type = status.data?.[sessionID]?.type
+        debugLog("wait.poll", {
+          type: type ?? null,
+          seenBusy,
+          hasData: status.data !== undefined,
+          statusError: status.error !== undefined,
+          elapsedMs: elapsed(),
+        })
         if (type === "busy" || type === "retry") seenBusy = true
         if (status.error === undefined && seenBusy && type !== "busy" && type !== "retry") {
-          // Don't pass `report` — the shared variable may hold a stale
-          // intermediate message.updated (structured still undefined while the
-          // model was mid-processing).  Omitting it forces the caller to read
-          // the committed final message via latestStructured.
+          debugLog("wait.polledIdleReturn", { sessionID, elapsedMs: elapsed() })
           return { kind: "idle" }
         }
       } catch {
-        // Transient status failures leave the event stream and timeout in charge.
       }
       await Bun.sleep(pollIntervalMs)
     }
   })()
   const stall = (async (): Promise<SessionOutcome> => {
     await Bun.sleep(timeoutMs)
-    // Before declaring stalled, check if the session is still actively busy.
-    // A busy session is working, not unresponsive — keep waiting rather than
-    // cutting it off prematurely.
     while (true) {
       try {
         const status = await client.session.status()
         const type = status.data?.[sessionID]?.type
-        if (type !== "busy" && type !== "retry") return { kind: "stalled" }
+        if (type === "busy" || type === "retry") {
+          await Bun.sleep(pollIntervalMs)
+          continue
+        }
+        if (seenBusy) {
+          // Session was active but is now idle — yield to polledIdle so a
+          // normal completion isn't misreported as a stall.
+          await Bun.sleep(5 * pollIntervalMs)
+        }
+        debugLog("wait.stallFired", { sessionID, elapsedMs: elapsed(), type: type ?? null, seenBusy })
+        return { kind: "stalled" }
       } catch {
+        debugLog("wait.stallFired", { sessionID, elapsedMs: elapsed(), statusFailure: true })
         return { kind: "stalled" }
       }
-      await Bun.sleep(pollIntervalMs)
     }
   })()
   return Promise.race([terminal, polledIdle, stall])
@@ -230,6 +295,11 @@ async function waitForSessionOutcome(
 // The fix report is the structured output of the latest assistant message.
 async function latestStructured(client: OpenCodeClient, sessionID: string): Promise<StructuredReport> {
   const result = await client.session.messages({ sessionID, limit: 10 })
+  debugLog("fix.latestStructured", {
+    sessionID,
+    error: result.error !== undefined ? JSON.stringify(result.error).slice(0, 500) : null,
+    messages: result.data?.length ?? null,
+  })
   if (result.error !== undefined) throw new Error(`reading session messages failed: ${JSON.stringify(result.error)}`)
   const messages = result.data ?? []
   for (let i = messages.length - 1; i >= 0; i--) {
