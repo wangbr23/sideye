@@ -34,6 +34,7 @@ export function projectState(state: AppState, options: { sessionLinked?: boolean
     analysisStatus: Object.fromEntries(state.analysisStatus),
     acceptedFindings: state.acceptedFindings,
     submissions: state.submissions,
+    progress: state.progress,
     // Transitional convenience projection for the existing action bar. Canonical
     // history is `submissions`; this never owns mutable authorization state.
     submission: cycle === undefined ? null : {

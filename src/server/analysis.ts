@@ -3,7 +3,9 @@ import type { AssistantMessage, OpenCodeClient, Part } from "../session/client.t
 import { promptWithTimeout, showToast } from "../session/client.ts"
 import { analysisBatches, analysisJsonSchema, analysisOutputSchema, type AnalysisOutput } from "../session/schemas.ts"
 import { analysisPrompt } from "../session/prompts.ts"
+import { parseStructuredOutput, replyText } from "./structured.ts"
 import { broadcast } from "./sse.ts"
+import { clearProgress, setProgress } from "./progress.ts"
 
 // Thinking limit per analysis batch: a batch that exceeds this fails the round
 // analysis loudly (browser retry button) and stops the agent (LLD §5b). The
@@ -11,16 +13,18 @@ import { broadcast } from "./sse.ts"
 // batch is retryable from the browser.
 export const ANALYSIS_BATCH_TIMEOUT_MS = Number(process.env.SIDEYE_ANALYSIS_TIMEOUT_MS ?? 10 * 60_000)
 
-// Analysis runs answer purely from the quoted diff, so every tool is removed
-// from the request: a model left with repo tools wanders (glob/read/bash for
-// minutes) and never calls the StructuredOutput tool, ending the run with
-// StructuredOutputError retries:0. Exact ids vanish from the model's request
-// (llm request filter); the "*" entry is a wildcard permission deny that
-// backstops any unlisted plugin/MCP tool at execution. StructuredOutput itself
-// is not permission-checked. These rules are session-scoped, so analysis runs
-// in a dedicated child session — the reviewer session keeps its own tools.
+// Analysis runs answer purely from the quoted diff, so every repo tool is
+// removed from the request: a model left with repo tools wanders (glob/read/
+// bash for minutes) and never calls the StructuredOutput tool. Exact ids
+// vanish from the model's request (llm request filter). Deliberately no "*"
+// wildcard: on OpenCode 1.18.31 the wildcard denies the injected
+// StructuredOutput tool itself, so the model can only mimic the call as text
+// and every prompt ends StructuredOutputError (verified empirically
+// 2026-09-15). Unlisted plugin/MCP tools stay callable, but this dedicated
+// child session only ever receives data-quoted prompts. These rules are
+// session-scoped, so analysis runs in a dedicated child session — the
+// reviewer session keeps its own tools.
 const ANALYSIS_TOOLS_OFF: Record<string, boolean> = {
-  "*": false,
   bash: false,
   edit: false,
   glob: false,
@@ -58,39 +62,61 @@ export async function runAnalysis(state: AppState, round: Round, client: OpenCod
   void showToast(client, `Analyzing the diff (round ${round.n}) — results appear in the review browser.`, "info")
 
   try {
-    const analysisSession = await client.session.create({
-      parentID: state.sessionID,
-      title: `sideye analysis · round ${round.n}`,
-    })
-    const analysisSessionID = analysisSession.data?.id
-    if (analysisSessionID === undefined) throw new Error("analysis session create returned no id")
-
+    const batches = analysisBatches(round.files)
     const merged: AnalysisResult = { files: [], hunks: [], findings: [] }
     const unparsed: string[] = []
 
-    for (const batch of analysisBatches(round.files)) {
+    for (const [index, batch] of batches.entries()) {
+      const label = `batch ${index + 1}/${batches.length}`
+      const analysisSession = await client.session.create({
+        parentID: state.sessionID,
+        title: `sideye analysis · round ${round.n} · ${label}`,
+      })
+      const analysisSessionID = analysisSession.data?.id
+      if (analysisSessionID === undefined) throw new Error("analysis session create returned no id")
+      if (index === 0) {
+        setProgress(state, "analysis", {
+          kind: "analysis",
+          phase: `${label} — thinking`,
+          sessionID: analysisSessionID,
+          startedAt: new Date().toISOString(),
+          batch: { n: 1, of: batches.length },
+        })
+      } else if (state.progress.analysis !== undefined) {
+        state.progress.analysis.sessionID = analysisSessionID
+      }
+      const phase = (text: string): void => {
+        const current = state.progress.analysis
+        if (current === undefined) return
+        current.phase = text
+        current.batch = { n: index + 1, of: batches.length }
+        broadcast(state, "progress.update", state.progress)
+      }
+      phase(`${label} — thinking`)
       const prompt = analysisPrompt(batch)
       const first = await promptBatch(client, analysisSessionID, prompt)
-      const parsed = parseStructured(first.info)
+      const parsed = parseStructured(first.info, replyText(first.parts))
       if ("data" in parsed) {
         mergeInto(merged, parsed.data)
         continue
       }
+      phase(`${label} — repairing`)
       const retry = await promptBatch(
         client,
         analysisSessionID,
         `${prompt}\n\nYour previous reply failed validation (${parsed.issues}). Reply again with corrected JSON matching the schema.`,
       )
-      const reparsed = parseStructured(retry.info)
+      const reparsed = parseStructured(retry.info, replyText(retry.parts))
       if ("data" in reparsed) {
         mergeInto(merged, reparsed.data)
         continue
       }
-      const fallback = fallbackText(retry.parts)
+      const fallback = replyText(retry.parts)
       if (fallback.trim() !== "") unparsed.push(fallback)
     }
 
     if (unparsed.length > 0) merged.unparsed = unparsed.join("\n\n")
+    clearProgress(state, "analysis")
     state.analysis.set(round.n, merged)
     state.analysisStatus.delete(round.n)
     broadcast(state, "analysis.update", { round: round.n })
@@ -101,6 +127,7 @@ export async function runAnalysis(state: AppState, round: Round, client: OpenCod
     )
     return merged
   } catch (err) {
+    clearProgress(state, "analysis")
     state.analysisStatus.set(round.n, "failed")
     broadcast(state, "analysis.failed", { round: round.n })
     void showToast(client, `Analysis failed (round ${round.n}) — retry from the review browser.`, "error")
@@ -108,13 +135,15 @@ export async function runAnalysis(state: AppState, round: Round, client: OpenCod
   }
 }
 
-function parseStructured(info: AssistantMessage): { data: AnalysisOutput } | { issues: string } {
-  if (info.error !== undefined) {
-    return { issues: `${info.error.name ?? "error"}: ${describeError(info.error)}` }
-  }
-  const result = analysisOutputSchema.safeParse(info.structured)
-  if (result.success) return { data: result.data }
-  return { issues: result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") }
+function parseStructured(info: AssistantMessage, reply: string): { data: AnalysisOutput } | { issues: string } {
+  return parseStructuredOutput(
+    {
+      structured: info.structured,
+      error: info.error === undefined ? undefined : { name: info.error.name, message: describeError(info.error) },
+      text: reply,
+    },
+    analysisOutputSchema,
+  )
 }
 
 function describeError(error: AssistantMessage["error"]): string {
@@ -143,13 +172,6 @@ function mergeInto(merged: AnalysisResult, output: AnalysisOutput): void {
   merged.files.push(...output.files)
   merged.hunks.push(...output.hunks)
   merged.findings.push(...output.findings)
-}
-
-function fallbackText(parts: Part[]): string {
-  return parts
-    .filter((part): part is Extract<Part, { type: "text" }> => part.type === "text")
-    .map((part) => part.text)
-    .join("\n")
 }
 
 function summarize(value: unknown): string {

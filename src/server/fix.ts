@@ -2,8 +2,10 @@ import type { AppState, RequestStatus } from "../types.ts"
 import type { OpenCodeClient } from "../session/client.ts"
 import { fixJsonSchema, fixOutputSchema, type FixOutput } from "../session/schemas.ts"
 import { fixPrompt } from "../session/prompts.ts"
+import { parseStructuredOutput, replyText } from "./structured.ts"
 import { broadcast } from "./sse.ts"
 import { activeApprovedCycle } from "./submissions.ts"
+import { clearProgress, setProgress } from "./progress.ts"
 
 export const FIX_STALL_TIMEOUT_MS = 10 * 60 * 1000
 
@@ -35,75 +37,93 @@ export async function runFixAndStatus(state: AppState, client: OpenCodeClient, o
   if (!approved || (options.cycleN !== undefined && (approved.cycle.n !== options.cycleN || approved.plan.n !== options.versionN))) {
     throw new Error("fix flow requires an approved plan")
   }
-  const prompt = fixPrompt({
-    requests: approved.plan.payload.requests.map((request) => ({
-      id: request.id,
-      text: request.text,
-      origin: request.origin,
-      comment: request.comment,
-    })),
-    plan: approved.plan.plan!,
-    feedback: approved.plan.feedback,
-    lessons: approved.plan.payload.lessons.map((lesson) => ({
-      excerpt: lesson.excerpt,
-      provenance: {
-        round: lesson.provenance.round,
-        ...(lesson.provenance.file !== undefined ? { file: lesson.provenance.file } : {}),
-        ...(lesson.provenance.hunkIndex !== undefined ? { hunkIndex: lesson.provenance.hunkIndex } : {}),
-      },
-    })),
-  })
+  try {
+    const prompt = fixPrompt({
+      requests: approved.plan.payload.requests.map((request) => ({
+        id: request.id,
+        text: request.text,
+        origin: request.origin,
+        comment: request.comment,
+      })),
+      plan: approved.plan.plan!,
+      feedback: approved.plan.feedback,
+      lessons: approved.plan.payload.lessons.map((lesson) => ({
+        excerpt: lesson.excerpt,
+        provenance: {
+          round: lesson.provenance.round,
+          ...(lesson.provenance.file !== undefined ? { file: lesson.provenance.file } : {}),
+          ...(lesson.provenance.hunkIndex !== undefined ? { hunkIndex: lesson.provenance.hunkIndex } : {}),
+        },
+      })),
+    })
 
-  const stallTimeoutMs = options.stallTimeoutMs ?? FIX_STALL_TIMEOUT_MS
-  const statusPollIntervalMs = options.statusPollIntervalMs ?? 1000
-  const promptMessageID = await sendFixPrompt(client, state.sessionID, prompt)
-  const outcome = await waitForSessionOutcome(client, state.sessionID, promptMessageID, stallTimeoutMs, statusPollIntervalMs)
-  if (outcome.kind === "error") {
-    storeFixError(state, `fix pass failed: ${messageError(outcome.error)}`)
-    return
-  }
-  if (outcome.kind === "stalled") {
-    approved.cycle.stalled = true
-    broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, stalled: true })
-    return
-  }
-  const report = outcome.report ?? await latestStructured(client, state.sessionID)
-  if (report.error !== undefined) {
-    storeFixError(state, `fix pass failed: ${messageError(report.error)}`)
-    return
-  }
-  const parsed = parseFix(report)
-  if ("data" in parsed) {
-    storeStatuses(state, parsed.data)
-    return
-  }
-  // one repair pass, same as every structured flow (LLD §7)
-  const repairPromptMessageID = await sendFixPrompt(
-    client,
-    state.sessionID,
-    `${prompt}\n\nYour previous report failed validation (${parsed.issues}). Reply again with corrected JSON matching the schema.`,
-  )
-  const repairOutcome = await waitForSessionOutcome(client, state.sessionID, repairPromptMessageID, stallTimeoutMs, statusPollIntervalMs)
-  if (repairOutcome.kind === "error") {
-    storeFixError(state, `fix pass failed: ${messageError(repairOutcome.error)}`)
-    return
-  }
-  if (repairOutcome.kind === "stalled") {
-    approved.cycle.stalled = true
-    broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, stalled: true })
-    return
-  }
-  const repaired = repairOutcome.report ?? await latestStructured(client, state.sessionID)
-  if (repaired.error !== undefined) {
-    storeFixError(state, `fix pass failed: ${messageError(repaired.error)}`)
-    return
-  }
-  const reparsed = parseFix(repaired)
-  if (!("data" in reparsed)) {
+    const stallTimeoutMs = options.stallTimeoutMs ?? FIX_STALL_TIMEOUT_MS
+    const statusPollIntervalMs = options.statusPollIntervalMs ?? 1000
+    const setFixPhase = (phase: string): void => {
+      const current = state.progress.agent
+      if (current === undefined || current.kind !== "fix") return
+      current.phase = phase
+      broadcast(state, "progress.update", state.progress)
+    }
+    setProgress(state, "agent", {
+      kind: "fix",
+      phase: "queued",
+      sessionID: state.sessionID,
+      startedAt: new Date().toISOString(),
+    })
+    const outcome = await sendFixPromptAndWait(client, state.sessionID, prompt, stallTimeoutMs, statusPollIntervalMs, () => setFixPhase("running"))
+    if (outcome.kind === "error") {
+      storeFixError(state, `fix pass failed: ${messageError(outcome.error)}`)
+      return
+    }
+    if (outcome.kind === "stalled") {
+      approved.cycle.stalled = true
+      broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, stalled: true })
+      return
+    }
+    const report = outcome.report ?? await latestStructured(client, state.sessionID)
+    const parsed = parseFix(await withStoredText(client, state.sessionID, report))
+    if ("data" in parsed) {
+      storeStatuses(state, parsed.data)
+      return
+    }
+    if (report.error !== undefined) {
+      storeFixError(state, `fix pass failed: ${messageError(report.error)}`)
+      return
+    }
+    // one repair pass, same as every structured flow (LLD §7)
+    setFixPhase("repairing")
+    const repairOutcome = await sendFixPromptAndWait(
+      client,
+      state.sessionID,
+      `${prompt}\n\nYour previous report failed validation (${parsed.issues}). Reply again with corrected JSON matching the schema.`,
+      stallTimeoutMs,
+      statusPollIntervalMs,
+      () => setFixPhase("running"),
+    )
+    if (repairOutcome.kind === "error") {
+      storeFixError(state, `fix pass failed: ${messageError(repairOutcome.error)}`)
+      return
+    }
+    if (repairOutcome.kind === "stalled") {
+      approved.cycle.stalled = true
+      broadcast(state, "status.ready", { cycle: approved.cycle.n, version: approved.plan.n, stalled: true })
+      return
+    }
+    const repaired = repairOutcome.report ?? await latestStructured(client, state.sessionID)
+    const reparsed = parseFix(await withStoredText(client, state.sessionID, repaired))
+    if ("data" in reparsed) {
+      storeStatuses(state, reparsed.data)
+      return
+    }
+    if (repaired.error !== undefined) {
+      storeFixError(state, `fix pass failed: ${messageError(repaired.error)}`)
+      return
+    }
     storeFixError(state, `status report failed validation twice: ${reparsed.issues}`)
-    return
+  } finally {
+    clearProgress(state, "agent")
   }
-  storeStatuses(state, reparsed.data)
 }
 
 // Mints a user-message ID in OpenCode's `msg_` shape so promptAsync can be
@@ -120,8 +140,7 @@ function newPromptMessageID(): string {
 
 // Sends the fix prompt tagged with a caller-visible messageID so the run it
 // starts can be told apart from any other run on the session.
-async function sendFixPrompt(client: OpenCodeClient, sessionID: string, prompt: string): Promise<string> {
-  const messageID = newPromptMessageID()
+async function sendFixPrompt(client: OpenCodeClient, sessionID: string, messageID: string, prompt: string): Promise<void> {
   const result = await client.session.promptAsync({
     sessionID,
     messageID,
@@ -129,7 +148,28 @@ async function sendFixPrompt(client: OpenCodeClient, sessionID: string, prompt: 
     format: { type: "json_schema", schema: fixJsonSchema },
   })
   if (result.error !== undefined) throw new Error(`sending fix prompt failed: ${JSON.stringify(result.error)}`)
-  return messageID
+}
+
+async function sendFixPromptAndWait(
+  client: OpenCodeClient,
+  sessionID: string,
+  prompt: string,
+  timeoutMs: number,
+  pollIntervalMs: number,
+  onArmed?: () => void,
+): Promise<SessionOutcome> {
+  const messageID = newPromptMessageID()
+  const events = await client.event.subscribe()
+  let submitted = false
+  const wait = waitForSessionOutcome(events, client, sessionID, messageID, timeoutMs, pollIntervalMs, () => submitted, onArmed)
+  try {
+    submitted = true
+    await sendFixPrompt(client, sessionID, messageID, prompt)
+    return await wait.result
+  } catch (error) {
+    wait.cancel()
+    throw error
+  }
 }
 
 function storeFixError(state: AppState, error: string): void {
@@ -148,10 +188,15 @@ function storeStatuses(state: AppState, output: FixOutput): void {
   }
 }
 
-function parseFix(info: { structured?: unknown }): { data: FixOutput } | { issues: string } {
-  const result = fixOutputSchema.safeParse(info.structured)
-  if (result.success) return { data: result.data }
-  return { issues: result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") }
+function parseFix(report: StructuredReport): { data: FixOutput } | { issues: string } {
+  return parseStructuredOutput(
+    {
+      structured: report.structured,
+      error: report.error === undefined ? undefined : { name: report.error.name, message: messageError(report.error) },
+      text: report.text,
+    },
+    fixOutputSchema,
+  )
 }
 
 interface MessageError {
@@ -163,34 +208,28 @@ function messageError(error: MessageError | undefined): string {
   return error?.data?.message ?? error?.name ?? "unknown model error"
 }
 
-type StructuredReport = { structured?: unknown; error?: MessageError }
+type StructuredReport = { structured?: unknown; error?: MessageError; text?: string }
 type SessionOutcome = { kind: "idle"; report?: StructuredReport } | { kind: "error"; error?: MessageError } | { kind: "stalled" }
 
 // Waits for THIS prompt's run to finish. `promptMessageID` is the user message
 // the prompt was sent under; the wait only "arms" once an assistant message
-// parented on it appears — positive evidence the run started. Before arming,
-// idle/error events and busy→idle status transitions are ignored: they belong
-// to whatever ran before the prompt (or to a queued-prompt gap), and trusting
-// them produced false "invalid report" failures while the real fix hadn't even
-// begun. If the queued prompt never starts, the stall budget fires honestly.
-// Subscribes its own event stream — a shared stream let a settled wait's
-// still-iterating loop steal the next wait's events. Losers exit via `settled`
-// so no consumer outlives the race. A provider error must surface immediately
-// rather than fall through to the 10-minute stall state.
-async function waitForSessionOutcome(
+// parented on it appears — positive evidence the run started. Idle events and
+// busy→idle status transitions remain gated on that evidence. A same-session
+// error is attributed once prompt submission begins because providers can fail
+// before creating an assistant message; the fix flow is the session's only
+// submitted operation at that point. Events observed before submission remain
+// ignored. The caller supplies a fresh stream that was subscribed before the
+// prompt request, closing the event-loss window around promptAsync.
+function waitForSessionOutcome(
+  events: Awaited<ReturnType<OpenCodeClient["event"]["subscribe"]>>,
   client: OpenCodeClient,
   sessionID: string,
   promptMessageID: string,
   timeoutMs: number,
   pollIntervalMs: number,
-): Promise<SessionOutcome> {
-  // Each wait subscribes its own event stream: a shared stream let a settled
-  // wait's still-iterating loop steal the next wait's events. The SDK offers
-  // no way to unblock a pending stream.next() (an options signal is silently
-  // ignored, and generator.return() deadlocks behind a pending read), so a
-  // losing terminal loop stays parked on one open connection until the
-  // process ends — inert, and cheaper than stolen events.
-  const events = await client.event.subscribe()
+  isSubmitted: () => boolean,
+  onArmed?: () => void,
+): { result: Promise<SessionOutcome>; cancel(): void } {
   let report: StructuredReport | undefined
   let armed = false
   let seenBusy = false
@@ -208,7 +247,10 @@ async function waitForSessionOutcome(
       if (value.type === "message.updated" && value.properties.sessionID === sessionID && value.properties.info.role === "assistant") {
         const info = value.properties.info
         if (info.parentID !== promptMessageID) continue // another run's message — not ours
-        armed = true
+        if (!armed) {
+          armed = true
+          onArmed?.()
+        }
         report = {
           structured: info.structured,
           error: info.error === undefined
@@ -216,7 +258,7 @@ async function waitForSessionOutcome(
             : { name: info.error.name, data: "data" in info.error ? info.error.data as { message?: string } : undefined },
         }
       }
-      if (value.type === "session.error" && value.properties.sessionID === sessionID && armed) {
+      if (value.type === "session.error" && value.properties.sessionID === sessionID && isSubmitted()) {
         return { kind: "error", error: value.properties.error }
       }
       if (value.type === "session.idle" && value.properties.sessionID === sessionID && armed) return { kind: "idle", report }
@@ -263,10 +305,18 @@ async function waitForSessionOutcome(
     }
     return { kind: "stalled" }
   })()
-  try {
-    return await Promise.race([terminal, polledIdle, stall])
-  } finally {
-    settled = true
+  const result = (async (): Promise<SessionOutcome> => {
+    try {
+      return await Promise.race([terminal, polledIdle, stall])
+    } finally {
+      settled = true
+    }
+  })()
+  return {
+    result,
+    cancel() {
+      settled = true
+    },
   }
 }
 
@@ -284,8 +334,20 @@ async function latestStructured(client: OpenCodeClient, sessionID: string): Prom
             name: info.error.name,
             data: "data" in info.error ? info.error.data as { message?: string } : undefined,
           }
-      return { structured: info.structured, error }
+      return { structured: info.structured, error, text: replyText(messages[i]?.parts) }
     }
   }
   return { structured: undefined }
+}
+
+// Event-carried reports never carry parts, so a prose reply can only be
+// recovered from storage. Refetch the stored message once when a parse needs
+// text the report doesn't have; structured reports skip the fetch.
+async function withStoredText(client: OpenCodeClient, sessionID: string, report: StructuredReport): Promise<StructuredReport> {
+  if (report.structured !== undefined || report.text !== undefined) return report
+  try {
+    return await latestStructured(client, sessionID)
+  } catch {
+    return report
+  }
 }

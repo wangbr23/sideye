@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { buildHandlers } from "./server/routes.ts"
 import { generateReviewerToken, startReviewServer, type RunningReviewServer } from "./server/http.ts"
 import { startAnalysis } from "./server/analysis.ts"
+import { startProgressTap } from "./server/progress.ts"
 import { captureRound, createState } from "./server/state.ts"
 import type { AppState, ReviewTarget } from "./types.ts"
 import type { OpenCodeClient } from "./session/client.ts"
@@ -98,7 +99,10 @@ export async function launchReview(options: LaunchOptions): Promise<LaunchResult
   // Round-1 analysis starts with the launch, in the background like every
   // other session flow — the Analysis/Findings tabs fill via analysis.update
   // SSE. Later rounds are analyzed by POST /api/rounds on consented capture.
+  // The progress tap runs for the whole review lifetime (one event
+  // subscription) feeding the browser's live progress bars.
   if (options.client) {
+    startProgressTap(state, options.client)
     startAnalysis(state, round, options.client)
   }
 

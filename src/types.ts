@@ -141,6 +141,23 @@ export interface RequestStatus {
   checks?: { command: string; passed: boolean; summary: string }[]
 }
 
+// Live progress for a structured flow (LLD §5b/§5c). The flow code owns the
+// phase and batch counters; the event tap (server/progress.ts) enriches with
+// the last activity line and step count from OpenCode's message events.
+// `analysis` mirrors the analysisStatus surface (diff-pane notice), `agent`
+// the submission surface (planning / fix execution) in the action bar.
+export interface FlowProgress {
+  kind: "analysis" | "planning" | "fix"
+  phase: string
+  // the OpenCode session the flow's prompts run in — the event tap uses it to
+  // attribute message events to this record
+  sessionID: string
+  startedAt: string
+  detail?: string // last activity line from the event tap
+  steps?: number // completed tool steps seen by the tap
+  batch?: { n: number; of: number }
+}
+
 export interface AppState {
   token: string // 32 random bytes, base64url
   sessionID: string // originating OpenCode session
@@ -152,6 +169,7 @@ export interface AppState {
   analysisStatus: Map<number, "pending" | "failed"> // absent once analysis completes
   acceptedFindings: { round: number; findingId: string }[] // marked pre-submit, serialized on submit
 submissions: SubmissionCycle[] // immutable plan candidates, grouped by frozen round
+  progress: { analysis?: FlowProgress; agent?: FlowProgress }
   // connected SSE stream client controllers (server pushes events into these)
   sseClients: Set<ReadableStreamDefaultController<Uint8Array>>
   // last time an open browser page called POST /api/beacon — the launcher's

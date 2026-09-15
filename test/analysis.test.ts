@@ -16,8 +16,9 @@ interface StubServer {
 
 // Stub OpenCode: real /global/health for the client link, real /session create
 // for the analysis child session, then a queue of prompt responses served over
-// real HTTP.
-async function stubOpencode(responses: unknown[]): Promise<StubServer> {
+// real HTTP. delayMs (when set) slows every prompt response so mid-run phase
+// transitions are observable.
+async function stubOpencode(responses: unknown[], delayMs = 0): Promise<StubServer> {
   const requests: { prompt: string; sessionID: string; tools?: Record<string, boolean> }[] = []
   const toasts: unknown[] = []
   let created = 0
@@ -40,6 +41,7 @@ async function stubOpencode(responses: unknown[]): Promise<StubServer> {
       if (promptMatch) {
         const body = (await req.json()) as { parts: { text: string }[]; tools?: Record<string, boolean> }
         requests.push({ prompt: body.parts.map((p) => p.text).join("\n"), sessionID: promptMatch[1]!, tools: body.tools })
+        if (delayMs > 0) await Bun.sleep(delayMs)
         return Response.json(responses.shift() ?? { info: {}, parts: [] })
       }
       return Response.json({ error: "unexpected path" }, { status: 404 })
@@ -50,8 +52,8 @@ async function stubOpencode(responses: unknown[]): Promise<StubServer> {
 }
 
 let stubs: StubServer[] = []
-async function makeStub(responses: unknown[]): Promise<StubServer> {
-  const stub = await stubOpencode(responses)
+async function makeStub(responses: unknown[], delayMs = 0): Promise<StubServer> {
+  const stub = await stubOpencode(responses, delayMs)
   stubs.push(stub)
   return stub
 }
@@ -59,6 +61,15 @@ afterEach(() => {
   for (const stub of stubs) stub.stop()
   stubs = []
 })
+
+async function until(check: () => boolean, ms = 5000): Promise<boolean> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (check()) return true
+    await Bun.sleep(25)
+  }
+  return check()
+}
 
 const validOutput = {
   files: [
@@ -142,19 +153,23 @@ describe("runAnalysis", () => {
       expect(state.analysisStatus.has(1)).toBe(false)
 
       const { value } = await reader.read()
-      const chunk = new TextDecoder().decode(value)
-      expect(chunk).toContain("event: analysis.pending")
-      const { value: updateValue } = await reader.read()
-      const updateChunk = new TextDecoder().decode(updateValue)
-      expect(updateChunk).toContain("event: analysis.update")
-      expect(updateChunk).toContain('"round":1')
+      let chunk = new TextDecoder().decode(value)
+      // progress.update frames now interleave on the channel — accumulate
+      // chunks until the target event appears
+      while (!chunk.includes("event: analysis.update")) {
+        const next = await reader.read()
+        if (next.done) break
+        chunk += new TextDecoder().decode(next.value)
+      }
+      expect(chunk).toContain("event: analysis.update")
+      expect(chunk).toContain('"round":1')
       reader.releaseLock()
     } finally {
       server.stop()
     }
   })
 
-  test("prompts run in a dedicated child session with every tool denied", async () => {
+  test("prompts run in a dedicated child session with every repo tool denied but no wildcard", async () => {
     const stub = await makeStub([response({ structured: validOutput })])
     const { round, state } = makeRound([makeFile("a.txt")])
 
@@ -164,7 +179,11 @@ describe("runAnalysis", () => {
     for (const req of stub.requests) {
       expect(req.sessionID).toBe("ses_analysis_1")
       expect(req.sessionID).not.toBe(state.sessionID)
-      expect(req.tools?.["*"]).toBe(false)
+      // deliberately NO "*" wildcard: on OpenCode 1.18.31 the wildcard deny
+      // also denies the injected StructuredOutput tool itself, so every prompt
+      // would end StructuredOutputError — mimicked-as-text output is recovered
+      // by the JSON scanner (server/structured.ts) instead
+      expect(req.tools?.["*"]).toBeUndefined()
       expect(req.tools?.read).toBe(false)
       expect(req.tools?.bash).toBe(false)
       expect(req.tools?.glob).toBe(false)
@@ -172,16 +191,33 @@ describe("runAnalysis", () => {
     }
   })
 
+  test("progress shows batch phases during the run and clears after", async () => {
+    // 6 files → two batches of 5 + 1 (ANALYSIS_BATCH_FILES)
+    const files = ["f1", "f2", "f3", "f4", "f5", "f6"].map((name) => makeFile(`${name}.txt`))
+    const stub = await makeStub(files.map(() => response({ structured: validOutput })), 250)
+    const { round, state } = makeRound(files)
+
+    const finished = runAnalysis(state, round, stub.client)
+    expect(await until(() => state.progress.analysis?.phase === "batch 1/2 — thinking")).toBe(true)
+    expect(state.progress.analysis?.batch).toEqual({ n: 1, of: 2 })
+    expect(await until(() => state.progress.analysis?.phase === "batch 2/2 — thinking", 4000)).toBe(true)
+    await finished
+    expect(state.progress.analysis).toBeUndefined()
+  })
+
   test("invalid structured output retries once with the validation issues appended", async () => {
     const bad = { files: [{ file: "a.txt", purpose: "x", confidence: "confident", citations: [] }] } // bad confidence
-    const stub = await makeStub([response({ structured: bad }), response({ structured: validOutput })])
+    const stub = await makeStub([response({ structured: bad }), response({ structured: validOutput })], 150)
     const { round, state } = makeRound([makeFile("a.txt")])
 
-    const result = await runAnalysis(state, round, stub.client)
+    const finished = runAnalysis(state, round, stub.client)
+    expect(await until(() => state.progress.analysis?.phase === "batch 1/1 — repairing")).toBe(true)
+    const result = await finished
 
     expect(stub.requests).toHaveLength(2)
     expect(stub.requests[1]?.prompt).toMatch(/failed validation/)
     expect(stub.requests[1]?.prompt).toMatch(/confidence/)
+    expect(stub.requests[1]?.sessionID).toBe(stub.requests[0]?.sessionID)
     expect(result.hunks[0]?.rationale).toBe("reworded")
     expect(result.unparsed).toBeUndefined()
   })
@@ -228,6 +264,22 @@ describe("runAnalysis", () => {
     expect(result.findings[0]?.claim).toBe("greeting lost its i18n")
   })
 
+  test("StructuredOutputError with valid JSON embedded in the reply text parses without a repair retry", async () => {
+    // the shape glm-5.3-flash actually produced when it mimicked the
+    // structured-output call as prose
+    const embedded = `<tool_call>StructuredOutput('${JSON.stringify(validOutput)}')`
+    const stub = await makeStub([
+      response({ error: { name: "StructuredOutputError", data: { message: "Model did not produce structured output", retries: 0 } }, text: embedded }),
+    ])
+    const { round, state } = makeRound([makeFile("a.txt")])
+
+    const result = await runAnalysis(state, round, stub.client)
+
+    expect(stub.requests).toHaveLength(1)
+    expect(result.files).toHaveLength(1)
+    expect(result.unparsed).toBeUndefined()
+  })
+
   test("batches cap at 5 files or 400 lines; binary files are excluded", async () => {
     const stub = await makeStub([
       response({ structured: validOutput }),
@@ -250,6 +302,8 @@ describe("runAnalysis", () => {
     expect(stub.requests[0]?.prompt).toContain("f5.txt")
     expect(stub.requests[0]?.prompt).not.toContain("f6.txt")
     expect(stub.requests[1]?.prompt).toContain("f6.txt")
+    expect(stub.requests[0]?.sessionID).toBe("ses_analysis_1")
+    expect(stub.requests[1]?.sessionID).toBe("ses_analysis_2")
     for (const req of stub.requests) expect(req.prompt).not.toContain("binary.png")
   })
 

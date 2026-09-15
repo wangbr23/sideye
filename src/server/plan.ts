@@ -3,7 +3,9 @@ import type { OpenCodeClient } from "../session/client.ts"
 import { promptWithTimeout, showToast } from "../session/client.ts"
 import { planJsonSchema, planOutputSchema, type PlanOutput } from "../session/schemas.ts"
 import { planPrompt } from "../session/prompts.ts"
+import { parseStructuredOutput, replyText } from "./structured.ts"
 import { broadcast } from "./sse.ts"
+import { clearProgress, setProgress } from "./progress.ts"
 
 // Thinking limit per plan attempt: an over-limit draft fails the plan version
 // loudly (browser retry) and stops the agent (LLD §5c).
@@ -46,29 +48,41 @@ export async function runPlan(state: AppState, client: OpenCodeClient, cycleN: n
 
   const previous = state.submissions.find((cycle) => cycle.n === cycleN)?.plans.filter((item) => item.n < versionN && item.status === "ready").at(-1)?.plan
   const prompt = planPrompt(requests, previous, version.feedback)
-  const first = await promptPlan(state, client, prompt)
-  const parsed = parsePlan(first.info)
-  const firstIssues = "data" in parsed ? coverageIssues(version, parsed.data) : parsed.issues
-  if (firstIssues !== undefined) {
-    const retry = await promptPlan(
-      state,
-      client,
-      `${prompt}\n\nYour previous reply failed validation (${firstIssues}). Reply again with corrected JSON matching the schema.`,
-    )
-    const reparsed = parsePlan(retry.info)
-    const retryIssues = "data" in reparsed ? coverageIssues(version, reparsed.data) : reparsed.issues
-    if (retryIssues !== undefined) {
-      throw new Error(`plan prompt produced invalid output twice: ${retryIssues}`)
+  setProgress(state, "agent", {
+    kind: "planning",
+    phase: `drafting plan v${versionN}`,
+    sessionID: state.sessionID,
+    startedAt: new Date().toISOString(),
+  })
+  try {
+    const first = await promptPlan(state, client, prompt)
+    const parsed = parsePlan(first.info, replyText(first.parts))
+    const firstIssues = "data" in parsed ? coverageIssues(version, parsed.data) : parsed.issues
+    if (firstIssues !== undefined) {
+      state.progress.agent!.phase = `drafting plan v${versionN} — repairing`
+      broadcast(state, "progress.update", state.progress)
+      const retry = await promptPlan(
+        state,
+        client,
+        `${prompt}\n\nYour previous reply failed validation (${firstIssues}). Reply again with corrected JSON matching the schema.`,
+      )
+      const reparsed = parsePlan(retry.info, replyText(retry.parts))
+      const retryIssues = "data" in reparsed ? coverageIssues(version, reparsed.data) : reparsed.issues
+      if (retryIssues !== undefined) {
+        throw new Error(`plan prompt produced invalid output twice: ${retryIssues}`)
+      }
+      if (!("data" in reparsed)) throw new Error("unreachable invalid repaired plan")
+      const plan = storePlan(state, version, reparsed.data, cycleN)
+      await mirrorPlanToTui(state, client, retry.info.parentID, plan, version)
+      return plan
     }
-    if (!("data" in reparsed)) throw new Error("unreachable invalid repaired plan")
-    const plan = storePlan(state, version, reparsed.data, cycleN)
-    await mirrorPlanToTui(state, client, retry.info.parentID, plan, version)
+    if (!("data" in parsed)) throw new Error("unreachable invalid plan")
+    const plan = storePlan(state, version, parsed.data, cycleN)
+    await mirrorPlanToTui(state, client, first.info.parentID, plan, version)
     return plan
+  } finally {
+    clearProgress(state, "agent")
   }
-  if (!("data" in parsed)) throw new Error("unreachable invalid plan")
-  const plan = storePlan(state, version, parsed.data, cycleN)
-  await mirrorPlanToTui(state, client, first.info.parentID, plan, version)
-  return plan
 }
 
 function storePlan(state: AppState, version: PlanVersion, output: PlanOutput, cycle: number): Plan {
@@ -155,11 +169,15 @@ function getVersion(state: AppState, cycleN: number, versionN: number): PlanVers
   return state.submissions.find((cycle) => cycle.n === cycleN)?.plans.find((version) => version.n === versionN)
 }
 
-function parsePlan(info: { structured?: unknown; error?: { name?: string } }): { data: PlanOutput } | { issues: string } {
-  if (info.error !== undefined) return { issues: info.error.name ?? "error" }
-  const result = planOutputSchema.safeParse(info.structured)
-  if (result.success) return { data: result.data }
-  return { issues: result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") }
+function parsePlan(info: { structured?: unknown; error?: { name?: string } }, reply: string): { data: PlanOutput } | { issues: string } {
+  return parseStructuredOutput(
+    {
+      structured: info.structured,
+      error: info.error === undefined ? undefined : { name: info.error.name, message: info.error.name ?? "error" },
+      text: reply,
+    },
+    planOutputSchema,
+  )
 }
 
 async function promptPlan(state: AppState, client: OpenCodeClient, prompt: string) {

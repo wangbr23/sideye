@@ -236,9 +236,21 @@ function renderAnalysisState(round) {
       el("span", "analysis-state-detail", "No agent session is linked to this review."),
     )
   } else {
+    const progress = reviewState.progress?.analysis
+    const phase = el("span", "analysis-state-detail")
+    phase.id = "analysis-progress-phase"
+    phase.textContent = progress ? `${progress.phase} · ${fmtElapsed(progress.startedAt)}` : "starting…"
+    const detail = el("span", "analysis-state-detail progress-detail")
+    detail.id = "analysis-progress-detail"
+    detail.textContent = progress?.detail ?? ""
     notice.append(
       el("span", "loading-spinner", ""),
       el("strong", "analysis-state-title", "Analyzing changes"),
+      phase,
+    )
+    if (progress?.batch) notice.append(progressBar((progress.batch.n / progress.batch.of) * 100))
+    notice.append(
+      detail,
       el("span", "analysis-state-detail", "File explanations and findings are loading. You can review the diff now."),
     )
   }
@@ -788,12 +800,27 @@ function renderSubmitBar(bar, summaryEl, drawerEl) {
   drawerEl.replaceChildren(content)
 }
 
+function planningPhaseText(progress, count) {
+  const items = `Planning · ${count} item${count === 1 ? "" : "s"}`
+  return progress?.kind === "planning" ? `${items} · ${fmtElapsed(progress.startedAt)}` : items
+}
+
+function workingPhaseText(progress) {
+  return progress?.kind === "fix" ? agentProgressText(progress) : "Agent working…"
+}
+
 function renderPlanningBar(summaryEl, drawerEl, submission) {
   const count = submission.payload.requests.length
+  const stateEl = el("span", "action-bar-state", planningPhaseText(reviewState.progress?.agent, count))
+  stateEl.id = "agent-progress-phase"
+  const detail = el("span", "action-bar-detail progress-detail")
+  detail.id = "agent-progress-detail"
+  const progress = reviewState.progress?.agent
+  detail.textContent = progress?.kind === "planning" ? progressDetailText(progress) : `session: ${reviewState.sessionID}`
   summaryEl.replaceChildren(
     el("span", "loading-spinner", ""),
-    el("span", "action-bar-state", `Planning… ${count} item${count === 1 ? "" : "s"}`),
-    el("span", "action-bar-detail", `session: ${reviewState.sessionID}`),
+    stateEl,
+    detail,
   )
   summaryEl.onclick = () => {
     drawerEl.classList.toggle("open")
@@ -1051,10 +1078,16 @@ function renderStalledBar(summaryEl, drawerEl) {
 }
 
 function renderWorkingBar(summaryEl) {
+  const stateEl = el("span", "action-bar-state", workingPhaseText(reviewState.progress?.agent))
+  stateEl.id = "agent-progress-phase"
+  const detail = el("span", "action-bar-detail progress-detail")
+  detail.id = "agent-progress-detail"
+  const progress = reviewState.progress?.agent
+  detail.textContent = progress?.kind === "fix" ? progressDetailText(progress) : `session: ${reviewState.sessionID}`
   summaryEl.replaceChildren(
     el("span", "loading-spinner", ""),
-    el("span", "action-bar-state", "Agent working…"),
-    el("span", "action-bar-detail", `session: ${reviewState.sessionID}`),
+    stateEl,
+    detail,
   )
 }
 
@@ -1175,6 +1208,92 @@ function el(tag, className, content) {
   return node
 }
 
+// ── Live progress ──
+
+// The FIX_PHASE_LABELS map keeps server phase ids out of the markup: the flow
+// code sets short machine phases, the browser renders human ones. Analysis
+// phases are already human ("batch 2/3 — thinking").
+const FIX_PHASE_LABELS = { queued: "Starting", running: "Working", repairing: "Sending repair" }
+
+function fmtElapsed(iso) {
+  const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m${String(seconds % 60).padStart(2, "0")}s`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h${String(minutes % 60).padStart(2, "0")}m`
+}
+
+function humanPhase(record) {
+  if (record.kind === "fix") return FIX_PHASE_LABELS[record.phase] ?? record.phase
+  if (record.kind === "planning") return record.phase.includes("repairing") ? "Planning (repairing)" : "Planning"
+  return record.phase // analysis phases are already human ("batch 2/3 — thinking")
+}
+
+function agentProgressText(record) {
+  const label = humanPhase(record)
+  const steps = record.steps !== undefined && record.steps > 0 ? ` · step ${record.steps}` : ""
+  return `${label}${steps} · ${fmtElapsed(record.startedAt)}`
+}
+
+function progressDetailText(record) {
+  return record.detail ?? ""
+}
+
+function progressBar(fillPercent) {
+  const bar = el("div", "progress-bar")
+  bar.id = "analysis-progress-bar"
+  const fill = el("div", "progress-bar-fill")
+  bar.append(fill)
+  bar.setAttribute("role", "progressbar")
+  bar.setAttribute("aria-valuemin", "0")
+  bar.setAttribute("aria-valuemax", "100")
+  setProgressBarValue(bar, fillPercent)
+  return bar
+}
+
+function setProgressBarValue(bar, fillPercent) {
+  const value = Math.round(fillPercent)
+  bar.setAttribute("aria-valuenow", String(value))
+  bar.firstChild.style.width = `${value}%`
+}
+
+// Targeted progress patch — progress.update arrives ~1/s and must not re-render
+// the whole diff pane, so only the live elements are touched. Elements are
+// absent when the relevant view isn't rendered; the next full render (any
+// other SSE event or refetch) picks the values up.
+function updateProgressUI() {
+  const progress = reviewState?.progress ?? {}
+  const analysis = progress.analysis
+  const analysisPhase = document.getElementById("analysis-progress-phase")
+  if (analysisPhase && analysis) {
+    analysisPhase.textContent = `${analysis.phase} · ${fmtElapsed(analysis.startedAt)}`
+    const detail = document.getElementById("analysis-progress-detail")
+    if (detail) detail.textContent = progressDetailText(analysis)
+    const bar = document.getElementById("analysis-progress-bar")
+    if (bar && analysis.batch) {
+      setProgressBarValue(bar, (analysis.batch.n / analysis.batch.of) * 100)
+    }
+  }
+  const agent = progress.agent
+  const agentPhase = document.getElementById("agent-progress-phase")
+  if (agentPhase && agent) {
+    const submission = reviewState.submission
+    const planningBar = Boolean(submission?.planning)
+    const workingBar = Boolean(submission?.planApproved && !submission?.statuses && !submission?.stalled && !submission?.statusError)
+    if (planningBar && agent.kind === "planning") {
+      agentPhase.textContent = planningPhaseText(agent, submission.payload.requests.length)
+    } else if (workingBar && agent.kind === "fix") {
+      agentPhase.textContent = agentProgressText(agent)
+    } else {
+      return
+    }
+    const detail = document.getElementById("agent-progress-detail")
+    if (detail) detail.textContent = progressDetailText(agent)
+  }
+}
+setInterval(() => updateProgressUI(), 1000)
+
 // ── SSE ──
 
 function connectEvents() {
@@ -1191,6 +1310,12 @@ function connectEvents() {
   for (const name of SSE_EVENTS) {
     source.addEventListener(name, () => refresh())
   }
+  // progress.update is deliberately outside SSE_EVENTS: it ticks continuously
+  // and patches the live elements instead of re-rendering the diff pane.
+  source.addEventListener("progress.update", (event) => {
+    reviewState.progress = JSON.parse(event.data)
+    updateProgressUI()
+  })
   source.addEventListener("answer", (event) => {
     const data = JSON.parse(event.data)
     if (qaLog.some((qa) => qa.id === data.id)) return

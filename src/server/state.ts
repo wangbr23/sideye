@@ -27,6 +27,7 @@ export function createState(init: AppStateInit): AppState {
     analysisStatus: new Map(),
     acceptedFindings: [],
     submissions: [],
+    progress: {},
     sseClients: new Set(),
     lastHeartbeat: Date.now(),
   }

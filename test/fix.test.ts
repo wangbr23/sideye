@@ -25,14 +25,31 @@ afterEach(() => {
   stubs = []
 })
 
+async function until(check: () => boolean, ms = 5000): Promise<boolean> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (check()) return true
+    await Bun.sleep(25)
+  }
+  return check()
+}
+
 async function stubOpencode(options: {
   structured?: unknown
   error?: { name: string; data?: { message?: string } }
   eventError?: { name: string; data?: { message?: string } }
+  // prose text stored on the assistant message — what a non-structured-output
+  // model's reply looks like when read back from storage
+  text?: string
   idleDelayMs?: number
+  // gap between the arming message.updated and the idle event — a window in
+  // which progress-phase observers can see the armed state
+  idleGapMs?: number
   idleFor?: string
   neverIdle?: boolean
   omitIdle?: boolean
+  omitAssistant?: boolean
+  notifyBeforePromptResponse?: boolean
 }) {
   const prompts: string[] = []
   // multiple subscribers: leaked SDK SSE clients from prior tests can
@@ -44,23 +61,32 @@ async function stubOpencode(options: {
   // the assistant messages' parentID so the wait can arm on its own run
   let lastPromptID: string | undefined
   const notify = () => {
-    for (const controller of subscribers) {
-      try {
-        const sessionID = options.idleFor ?? "ses_1"
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-          id: "m1",
-          type: "message.updated",
-          properties: { sessionID, info: { id: "msg_1", sessionID, parentID: lastPromptID, role: "assistant", structured: options.structured, error: options.error } },
-        })}\n\n`))
-        if (!options.omitIdle) {
+    const sessionID = options.idleFor ?? "ses_1"
+    if (!options.omitAssistant) {
+      for (const controller of subscribers) {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+            id: "m1",
+            type: "message.updated",
+            properties: { sessionID, info: { id: "msg_1", sessionID, parentID: lastPromptID, role: "assistant", structured: options.structured, error: options.error } },
+          })}\n\n`))
+        } catch {
+          subscribers.delete(controller) // stream gone — stop notifying it
+        }
+      }
+    }
+    if (options.omitIdle) return
+    setTimeout(() => {
+      for (const controller of subscribers) {
+        try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(options.eventError
             ? { id: "e1", type: "session.error", properties: { sessionID, error: options.eventError } }
             : { id: "e1", type: "session.idle", properties: { sessionID } })}\n\n`))
+        } catch {
+          subscribers.delete(controller)
         }
-      } catch {
-        subscribers.delete(controller) // stream gone — stop notifying it
       }
-    }
+    }, options.idleGapMs ?? 150)
   }
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -88,12 +114,22 @@ async function stubOpencode(options: {
         const body = (await req.json()) as { messageID?: string; parts: { text: string }[] }
         prompts.push(body.parts.map((p) => p.text).join("\n"))
         lastPromptID = body.messageID
-        if (!options.neverIdle) setTimeout(() => notify(), options.idleDelayMs ?? 200)
+        if (!options.neverIdle) {
+          if (options.notifyBeforePromptResponse) {
+            notify()
+            await Bun.sleep(25)
+          } else {
+            setTimeout(() => notify(), options.idleDelayMs ?? 200)
+          }
+        }
         return new Response(null, { status: 204 })
       }
       if (path.endsWith("/message")) {
         return Response.json([
-          { info: { id: "msg_1", sessionID: "ses_1", role: "assistant", structured: options.structured, error: options.error }, parts: [] },
+          {
+            info: { id: "msg_1", sessionID: "ses_1", role: "assistant", structured: options.structured, error: options.error },
+            parts: options.text === undefined ? [] : [{ id: "p1", sessionID: "ses_1", messageID: "msg_1", type: "text", text: options.text }],
+          },
         ])
       }
       return Response.json({ error: "unexpected path" }, { status: 404 })
@@ -195,6 +231,62 @@ describe("fix + status flow", () => {
     // the foreign idle must not resolve the wait — the short stall budget fires
     expect(state.submissions[0]?.statuses).toBeUndefined()
     expect(state.submissions[0]?.stalled).toBe(true)
+    expect(state.progress.agent).toBeUndefined()
+  })
+
+  test("a StructuredOutputError reply with valid JSON in the stored text still stores statuses", async () => {
+    const stub = await stubOpencode({
+      error: { name: "StructuredOutputError", data: { message: "Model did not produce structured output" } },
+      text: JSON.stringify(validStatuses),
+    })
+    const state = stateReadyToFix()
+    const server = await startWithClient(state, stub.client)
+    const base = `http://127.0.0.1:${server.port}`
+
+    const approve = await fetch(`${base}/api/plan/approve`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ cycle: 1, version: 1 }),
+    })
+    expect(approve.status).toBe(200)
+
+    expect(await until(() => state.submissions[0]?.statuses !== undefined)).toBe(true)
+    expect(stub.prompts).toHaveLength(1) // no repair pass needed
+    expect(state.submissions[0]?.statuses).toEqual(validStatuses.statuses)
+    expect(state.submissions[0]?.stalled).toBeUndefined()
+  })
+
+  test("fix progress phases move queued → running and clear on success", async () => {
+    const stub = await stubOpencode({ structured: validStatuses, idleDelayMs: 300 })
+    const state = stateReadyToFix()
+    const { runFixAndStatus } = await import("../src/server/fix.ts")
+    state.submissions[0]!.approvedPlan = 1
+    const finished = runFixAndStatus(state, stub.client, { stallTimeoutMs: 2000, statusPollIntervalMs: 1000 })
+    expect(await until(() => state.progress.agent?.kind === "fix")).toBe(true)
+    expect(await until(() => state.progress.agent?.phase === "running")).toBe(true)
+    await finished
+    expect(state.progress.agent).toBeUndefined()
+    expect(state.submissions[0]?.statuses).toEqual(validStatuses.statuses)
+  })
+
+  test("repair pass moves the phase through repairing before running", async () => {
+    const bad = { statuses: [{ requestId: "r1", status: "done-deal", reason: "x" }] } // invalid status enum
+    const stub = await stubOpencode({ structured: bad, idleDelayMs: 300 })
+    const state = stateReadyToFix()
+    const { runFixAndStatus } = await import("../src/server/fix.ts")
+    state.submissions[0]!.approvedPlan = 1
+    const finished = runFixAndStatus(state, stub.client, { stallTimeoutMs: 2000, statusPollIntervalMs: 1000 })
+    const seen = new Set<string>()
+    await until(() => {
+      const phase = state.progress.agent?.phase
+      if (phase !== undefined) seen.add(phase)
+      return state.progress.agent === undefined
+    })
+    await finished
+    expect(seen.has("queued")).toBe(true)
+    expect(seen.has("running")).toBe(true)
+    expect(seen.has("repairing")).toBe(true)
+    expect(state.submissions[0]?.statusError).toMatch(/failed validation twice/)
   })
 
   test("stall timeout marks the session unresponsive and keeps the review usable", async () => {
@@ -208,6 +300,7 @@ describe("fix + status flow", () => {
     expect(Date.now() - started).toBeLessThan(5000)
     expect(state.submissions[0]?.statuses).toBeUndefined()
     expect(state.submissions[0]?.stalled).toBe(true)
+    expect(state.progress.agent).toBeUndefined()
   })
 
   test("report failing validation twice records a status error", async () => {
@@ -251,6 +344,35 @@ describe("fix + status flow", () => {
     expect(state.submissions[0]?.statuses).toBeUndefined()
     expect(state.submissions[0]?.stalled).toBeUndefined()
     expect(state.submissions[0]?.statusError).toBe("fix pass failed: Invalid prompt: malformed model history")
+  })
+
+  test("captures a correlated assistant update emitted before promptAsync returns", async () => {
+    const stub = await stubOpencode({ structured: validStatuses, notifyBeforePromptResponse: true, idleGapMs: 0 })
+    const state = stateReadyToFix()
+    const { runFixAndStatus } = await import("../src/server/fix.ts")
+    state.submissions[0]!.approvedPlan = 1
+
+    await runFixAndStatus(state, stub.client, { stallTimeoutMs: 1000 })
+
+    expect(state.submissions[0]?.statuses).toEqual(validStatuses.statuses)
+    expect(state.submissions[0]?.stalled).toBeUndefined()
+  })
+
+  test("attributes a session error after submission without an assistant update", async () => {
+    const stub = await stubOpencode({
+      eventError: { name: "UnknownError", data: { message: "provider rejected the prompt" } },
+      omitAssistant: true,
+      notifyBeforePromptResponse: true,
+      idleGapMs: 0,
+    })
+    const state = stateReadyToFix()
+    const { runFixAndStatus } = await import("../src/server/fix.ts")
+    state.submissions[0]!.approvedPlan = 1
+
+    await runFixAndStatus(state, stub.client, { stallTimeoutMs: 1000 })
+
+    expect(state.submissions[0]?.stalled).toBeUndefined()
+    expect(state.submissions[0]?.statusError).toBe("fix pass failed: provider rejected the prompt")
   })
 
   test("session status polling completes when the idle event is missed", async () => {

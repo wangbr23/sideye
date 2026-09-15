@@ -18,15 +18,15 @@ function planFromPrompt(body: { parts: { text: string }[] }) {
   return response({ structured: { perRequest: [...text.matchAll(/--- request ([^ ]+) /g)].map((match) => ({ requestId: match[1]!, approach: "Split the loop and add a test.", affectedFiles: ["a.txt"] })) } })
 }
 
-function response(overrides: { id?: string; parentID?: string; structured?: unknown; error?: { name: string } } = {}) {
+function response(overrides: { id?: string; parentID?: string; structured?: unknown; error?: { name: string }; text?: string } = {}) {
   const id = overrides.id ?? "msg_1"
   return {
     info: { id, parentID: overrides.parentID ?? `msg_user_${id}`, sessionID: "ses_1", role: "assistant", structured: overrides.structured, error: overrides.error },
-    parts: [{ id: "p1", sessionID: "ses_1", messageID: id, type: "text", text: "raw" }],
+    parts: [{ id: "p1", sessionID: "ses_1", messageID: id, type: "text", text: overrides.text ?? "raw" }],
   }
 }
 
-async function stubOpencode(responses: (unknown | ((body: { parts: { text: string }[] }) => unknown))[], options: { partUpdateStatus?: number } = {}) {
+async function stubOpencode(responses: (unknown | ((body: { parts: { text: string }[] }) => unknown))[], options: { partUpdateStatus?: number; delayMs?: number } = {}) {
   const prompts: string[] = []
   const partUpdates: { path: string; body: Record<string, unknown> }[] = []
   const toasts: { message?: string }[] = []
@@ -52,6 +52,7 @@ async function stubOpencode(responses: (unknown | ((body: { parts: { text: strin
       const body = (await req.json()) as { parts: { text: string }[] }
       prompts.push(body.parts.map((p) => p.text).join("\n"))
       const next = responses.shift()
+      if (options.delayMs !== undefined) await Bun.sleep(options.delayMs)
       return Response.json(typeof next === "function" ? next(body) : next ?? { info: {}, parts: [] })
     },
   })
@@ -131,7 +132,7 @@ describe("plan flow", () => {
   })
 
   test("submit returns immediately and dispatches the plan in the background", async () => {
-    const stub = await stubOpencode([planFromPrompt])
+    const stub = await stubOpencode([planFromPrompt], { delayMs: 100 })
     const state = stateForSubmit()
     state.comments.push({
       id: "r1",
@@ -168,12 +169,20 @@ describe("plan flow", () => {
     expect(body.plan).toBeNull() // plan arrives via SSE, not in the response
     expect(body.payload).toEqual(state.submissions[0]?.plans[0]?.payload)
 
+    // planning progress is declared for the live bar and cleared once ready
+    await waitUntil(() => state.progress.agent?.kind === "planning")
+    expect(state.progress.agent?.phase).toContain("drafting plan v1")
+    expect(state.progress.agent?.sessionID).toBe("ses_1")
+
     const chunk = await waitForSse(reader, "plan.ready")
     expect(chunk).toContain("event: plan.pending")
     expect(chunk).toContain("event: plan.ready")
     reader.releaseLock()
 
     await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready")
+    // the record clears after the TUI mirror completes, not at plan.ready
+    await waitUntil(() => state.progress.agent === undefined)
+    expect(state.progress.agent).toBeUndefined()
     expect(state.submissions[0]?.plans[0]?.plan?.perRequest).toHaveLength(3)
     expect(stub.prompts).toHaveLength(1)
     expect(stub.prompts[0]).toContain("sideye: code review fix plan")
@@ -270,6 +279,38 @@ describe("plan flow", () => {
     expect(state.submissions[0]?.plans[0]?.status).toBe("failed")
     expect(state.submissions[0]?.plans[0]?.error).toMatch(/invalid output twice/)
     expect(state.submissions[0]?.plans[0]?.payload.requests).toHaveLength(2) // payload kept
+  })
+
+  test("an error reply with valid JSON embedded in the text still stores the plan", async () => {
+    // request ids must match the payload exactly, so derive them from the
+    // prompt the way planFromPrompt does — but return them as prose JSON
+    // wrapped in a marker, the shape a non-structured-output model produces
+    const embeddedFromPrompt = (body: { parts: { text: string }[] }) => {
+      const text = body.parts.map((part) => part.text).join("\n")
+      const plan = {
+        perRequest: [...text.matchAll(/--- request ([^ ]+) /g)].map((match) => ({
+          requestId: match[1]!,
+          approach: "Split the loop and add a test.",
+          affectedFiles: ["a.txt"],
+        })),
+      }
+      return response({ error: { name: "StructuredOutputError" }, text: `<structured_output>${JSON.stringify(plan)}` })
+    }
+    const stub = await stubOpencode([embeddedFromPrompt])
+    const state = stateForSubmit()
+    const server = await startWithClient(state, stub.client)
+    const base = `http://127.0.0.1:${server.port}`
+
+    await fetch(`${base}/api/submit`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ requests: ["split the loop"] }),
+    })
+
+    await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready")
+    expect(stub.prompts).toHaveLength(1) // no repair retry needed
+    expect(state.submissions[0]?.plans[0]?.error).toBeUndefined()
+    expect(state.submissions[0]?.plans[0]?.plan?.perRequest).toHaveLength(1)
   })
 
   test("plan retry re-dispatches after a failure and stores the plan", async () => {

@@ -59,6 +59,7 @@ const state: AppState = {
   analysisStatus: new Map(),
   acceptedFindings: [],
   submissions: [],
+  progress: {},
   sseClients: new Set(),
   lastHeartbeat: 0,
 }

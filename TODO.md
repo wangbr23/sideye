@@ -53,3 +53,4 @@ Task format: `- [ ] \`T<n>\` <description> — <manual|agent>[, complexity: simp
 - [x] `T33` Correct T32 against a live OpenCode 1.18.30 failure: put ignored plan mirrors on user messages and terminate fix waits immediately on `session.error` — agent, complexity: simple
 - [x] `T34` Keep background plugin failures off stdout/stderr so timeout stack traces cannot corrupt the OpenCode TUI — agent, complexity: simple
 - [x] `T35` Stop plugin and CLI tests from opening browser tabs for ephemeral review servers — agent, complexity: simple
+- [x] `T36` Correct live progress semantics, accessibility metadata, and cross-session agent event attribution — agent, complexity: simple
