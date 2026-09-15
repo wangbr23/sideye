@@ -9,30 +9,40 @@ import type { OpenCodeClient } from "../src/session/client.ts"
 
 interface StubServer {
   client: OpenCodeClient
-  requests: { prompt: string }[]
+  requests: { prompt: string; sessionID: string; tools?: Record<string, boolean> }[]
   toasts: unknown[]
   stop(): void
 }
 
-// Stub OpenCode: real /global/health for the client link, then a queue of
-// prompt responses served over real HTTP.
+// Stub OpenCode: real /global/health for the client link, real /session create
+// for the analysis child session, then a queue of prompt responses served over
+// real HTTP.
 async function stubOpencode(responses: unknown[]): Promise<StubServer> {
-  const requests: { prompt: string }[] = []
+  const requests: { prompt: string; sessionID: string; tools?: Record<string, boolean> }[] = []
   const toasts: unknown[] = []
+  let created = 0
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch: async (req) => {
-      if (new URL(req.url).pathname === "/global/health") {
+      const path = new URL(req.url).pathname
+      if (path === "/global/health") {
         return Response.json({ healthy: true, version: "stub-1.0" })
       }
-      if (new URL(req.url).pathname === "/tui/show-toast") {
+      if (path === "/tui/show-toast") {
         toasts.push(await req.json().catch(() => null))
         return Response.json(true)
       }
-      const body = (await req.json()) as { parts: { text: string }[] }
-      requests.push({ prompt: body.parts.map((p) => p.text).join("\n") })
-      return Response.json(responses.shift() ?? { info: {}, parts: [] })
+      if (path === "/session") {
+        return Response.json({ id: `ses_analysis_${++created}` })
+      }
+      const promptMatch = path.match(/^\/session\/([^/]+)\/(message|prompt_async)$/)
+      if (promptMatch) {
+        const body = (await req.json()) as { parts: { text: string }[]; tools?: Record<string, boolean> }
+        requests.push({ prompt: body.parts.map((p) => p.text).join("\n"), sessionID: promptMatch[1]!, tools: body.tools })
+        return Response.json(responses.shift() ?? { info: {}, parts: [] })
+      }
+      return Response.json({ error: "unexpected path" }, { status: 404 })
     },
   })
   const client = await createSessionClient({ baseUrl: `http://127.0.0.1:${server.port}`, healthTimeoutMs: 1000 })
@@ -144,6 +154,24 @@ describe("runAnalysis", () => {
     }
   })
 
+  test("prompts run in a dedicated child session with every tool denied", async () => {
+    const stub = await makeStub([response({ structured: validOutput })])
+    const { round, state } = makeRound([makeFile("a.txt")])
+
+    await runAnalysis(state, round, stub.client)
+
+    expect(stub.requests.length).toBeGreaterThan(0)
+    for (const req of stub.requests) {
+      expect(req.sessionID).toBe("ses_analysis_1")
+      expect(req.sessionID).not.toBe(state.sessionID)
+      expect(req.tools?.["*"]).toBe(false)
+      expect(req.tools?.read).toBe(false)
+      expect(req.tools?.bash).toBe(false)
+      expect(req.tools?.glob).toBe(false)
+      expect(req.tools?.sideye_review_commit).toBe(false)
+    }
+  })
+
   test("invalid structured output retries once with the validation issues appended", async () => {
     const bad = { files: [{ file: "a.txt", purpose: "x", confidence: "confident", citations: [] }] } // bad confidence
     const stub = await makeStub([response({ structured: bad }), response({ structured: validOutput })])
@@ -241,7 +269,9 @@ describe("runAnalysis", () => {
       hostname: "127.0.0.1",
       port: 0,
       fetch: (req) => {
-        if (new URL(req.url).pathname === "/global/health") return Response.json({ healthy: true, version: "stub" })
+        const path = new URL(req.url).pathname
+        if (path === "/global/health") return Response.json({ healthy: true, version: "stub" })
+        if (path === "/session") return Response.json({ id: "ses_analysis" })
         return new Response("boom", { status: 500 })
       },
     })
@@ -257,7 +287,9 @@ describe("runAnalysis", () => {
       hostname: "127.0.0.1",
       port: 0,
       fetch: (req) => {
-        if (new URL(req.url).pathname === "/global/health") return Response.json({ healthy: true, version: "stub" })
+        const path = new URL(req.url).pathname
+        if (path === "/global/health") return Response.json({ healthy: true, version: "stub" })
+        if (path === "/session") return Response.json({ id: "ses_analysis" })
         return new Response("boom", { status: 500 })
       },
     })

@@ -40,6 +40,9 @@ async function stubOpencode(options: {
   const subscribers = new Set<ReadableStreamDefaultController<Uint8Array>>()
   const encoder = new TextEncoder()
   let statusChecks = 0
+  // like the real server, adopt the caller-supplied messageID and emit it as
+  // the assistant messages' parentID so the wait can arm on its own run
+  let lastPromptID: string | undefined
   const notify = () => {
     for (const controller of subscribers) {
       try {
@@ -47,7 +50,7 @@ async function stubOpencode(options: {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({
           id: "m1",
           type: "message.updated",
-          properties: { sessionID, info: { id: "msg_1", sessionID, role: "assistant", structured: options.structured, error: options.error } },
+          properties: { sessionID, info: { id: "msg_1", sessionID, parentID: lastPromptID, role: "assistant", structured: options.structured, error: options.error } },
         })}\n\n`))
         if (!options.omitIdle) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(options.eventError
@@ -82,8 +85,9 @@ async function stubOpencode(options: {
         return new Response(stream, { headers: { "content-type": "text/event-stream" } })
       }
       if (path.endsWith("/prompt_async")) {
-        const body = (await req.json()) as { parts: { text: string }[] }
+        const body = (await req.json()) as { messageID?: string; parts: { text: string }[] }
         prompts.push(body.parts.map((p) => p.text).join("\n"))
+        lastPromptID = body.messageID
         if (!options.neverIdle) setTimeout(() => notify(), options.idleDelayMs ?? 200)
         return new Response(null, { status: 204 })
       }

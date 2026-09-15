@@ -118,9 +118,11 @@ describe("launchReview", () => {
       hostname: "127.0.0.1",
       port: 0,
       fetch: async (req) => {
-        if (new URL(req.url).pathname === "/global/health") {
+        const path = new URL(req.url).pathname
+        if (path === "/global/health") {
           return Response.json({ healthy: true, version: "stub-1.0" })
         }
+        if (path === "/session") return Response.json({ id: "ses_analysis" })
         return Response.json({
           info: { id: "msg_1", sessionID: "ses_launch", role: "assistant", structured: validAnalysis },
           parts: [{ id: "p1", sessionID: "ses_launch", messageID: "msg_1", type: "text", text: "ok" }],

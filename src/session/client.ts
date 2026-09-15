@@ -16,10 +16,10 @@ export interface SessionClientOptions {
 // failed state, which the browser renders with a retry action.
 export async function promptWithTimeout(
   client: OpenCodeClient,
-  params: { sessionID: string; parts: { type: "text"; text: string }[]; format?: OutputFormat; timeoutMs: number; what?: string },
+  params: { sessionID: string; parts: { type: "text"; text: string }[]; format?: OutputFormat; timeoutMs: number; what?: string; tools?: Record<string, boolean> },
 ) {
-  const { sessionID, parts, format, timeoutMs, what = "prompt" } = params
-  const result = await client.session.prompt({ sessionID, parts, format }, { signal: AbortSignal.timeout(timeoutMs) })
+  const { sessionID, parts, format, timeoutMs, what = "prompt", tools } = params
+  const result = await client.session.prompt({ sessionID, parts, format, tools }, { signal: AbortSignal.timeout(timeoutMs) })
   if (result.error !== undefined) {
     // The SDK folds an aborted fetch into result.error instead of throwing;
     // Bun's TimeoutError keeps its name even though JSON.stringify loses it.

@@ -153,6 +153,7 @@ describe("POST /api/rounds", () => {
       fetch: async (req) => {
         const path = new URL(req.url).pathname
         if (path === "/global/health") return Response.json({ healthy: true, version: "stub" })
+        if (path === "/session") return Response.json({ id: "ses_analysis" })
         if (path.endsWith("/prompt_async") || path.endsWith("/message")) {
           const body = await req.json().catch(() => ({ parts: [] }))
           analysisPrompts.push(((body as { parts: { text: string }[] }).parts ?? []).map((p) => p.text).join("\n"))

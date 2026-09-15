@@ -11,6 +11,36 @@ import { broadcast } from "./sse.ts"
 // batch is retryable from the browser.
 export const ANALYSIS_BATCH_TIMEOUT_MS = Number(process.env.SIDEYE_ANALYSIS_TIMEOUT_MS ?? 10 * 60_000)
 
+// Analysis runs answer purely from the quoted diff, so every tool is removed
+// from the request: a model left with repo tools wanders (glob/read/bash for
+// minutes) and never calls the StructuredOutput tool, ending the run with
+// StructuredOutputError retries:0. Exact ids vanish from the model's request
+// (llm request filter); the "*" entry is a wildcard permission deny that
+// backstops any unlisted plugin/MCP tool at execution. StructuredOutput itself
+// is not permission-checked. These rules are session-scoped, so analysis runs
+// in a dedicated child session — the reviewer session keeps its own tools.
+const ANALYSIS_TOOLS_OFF: Record<string, boolean> = {
+  "*": false,
+  bash: false,
+  edit: false,
+  glob: false,
+  grep: false,
+  read: false,
+  write: false,
+  apply_patch: false,
+  task: false,
+  todowrite: false,
+  webfetch: false,
+  websearch: false,
+  question: false,
+  skill: false,
+  lsp: false,
+  plan_exit: false,
+  invalid: false,
+  sideye_review_commit: false,
+  sideye_review_worktree: false,
+}
+
 export function startAnalysis(state: AppState, round: Round, client: OpenCodeClient): void {
   // runAnalysis records the failure and sends a TUI toast. Do not write the
   // caught error to stdout/stderr: plugin launches share the TUI's terminal.
@@ -28,20 +58,27 @@ export async function runAnalysis(state: AppState, round: Round, client: OpenCod
   void showToast(client, `Analyzing the diff (round ${round.n}) — results appear in the review browser.`, "info")
 
   try {
+    const analysisSession = await client.session.create({
+      parentID: state.sessionID,
+      title: `sideye analysis · round ${round.n}`,
+    })
+    const analysisSessionID = analysisSession.data?.id
+    if (analysisSessionID === undefined) throw new Error("analysis session create returned no id")
+
     const merged: AnalysisResult = { files: [], hunks: [], findings: [] }
     const unparsed: string[] = []
 
     for (const batch of analysisBatches(round.files)) {
       const prompt = analysisPrompt(batch)
-      const first = await promptBatch(state, client, prompt)
+      const first = await promptBatch(client, analysisSessionID, prompt)
       const parsed = parseStructured(first.info)
       if ("data" in parsed) {
         mergeInto(merged, parsed.data)
         continue
       }
       const retry = await promptBatch(
-        state,
         client,
+        analysisSessionID,
         `${prompt}\n\nYour previous reply failed validation (${parsed.issues}). Reply again with corrected JSON matching the schema.`,
       )
       const reparsed = parseStructured(retry.info)
@@ -90,13 +127,14 @@ function describeError(error: AssistantMessage["error"]): string {
   return summarize(error)
 }
 
-async function promptBatch(state: AppState, client: OpenCodeClient, prompt: string): Promise<{ info: AssistantMessage; parts: Part[] }> {
+async function promptBatch(client: OpenCodeClient, sessionID: string, prompt: string): Promise<{ info: AssistantMessage; parts: Part[] }> {
   const data = await promptWithTimeout(client, {
-    sessionID: state.sessionID,
+    sessionID,
     parts: [{ type: "text", text: prompt }],
     format: { type: "json_schema", schema: analysisJsonSchema },
     timeoutMs: ANALYSIS_BATCH_TIMEOUT_MS,
     what: "analysis prompt",
+    tools: ANALYSIS_TOOLS_OFF,
   })
   return data
 }

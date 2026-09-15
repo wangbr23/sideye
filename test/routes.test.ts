@@ -292,6 +292,7 @@ describe("POST /api/analysis/retry", () => {
         const path = new URL(req.url).pathname
         if (path === "/global/health") return Response.json({ healthy: true, version: "stub-1.0" })
         if (path === "/tui/show-toast") return Response.json(true)
+        if (path === "/session") return Response.json({ id: "ses_analysis" })
         return Response.json({
           info: { id: "msg_1", sessionID: "ses_1", role: "assistant", structured: validAnalysis },
           parts: [{ id: "p1", sessionID: "ses_1", messageID: "msg_1", type: "text", text: "ok" }],
