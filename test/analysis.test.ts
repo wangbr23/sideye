@@ -280,6 +280,58 @@ describe("runAnalysis", () => {
     expect(result.unparsed).toBeUndefined()
   })
 
+  test("nested review JSON is normalized into analysis and findings instead of shown as unparsed", async () => {
+    const nestedReview = {
+      summary: "A conventional review document rather than Sideye's flat schema.",
+      files: [
+        {
+          path: "a.txt",
+          status: "modified",
+          purpose: "changes the greeting",
+          hunks: [{ header: "@@ -1 +1 @@", rationale: "reworded" }],
+        },
+      ],
+      findings: [
+        {
+          id: "f1",
+          severity: "medium",
+          confidence: "evidence",
+          source: "a.txt",
+          quote: "hi",
+          note: "greeting lost its i18n",
+        },
+        {
+          id: "f2",
+          confidence: "inference",
+          description: "the replacement may be unclear",
+          evidence: [{ source: "a.txt", quote: "hello" }],
+        },
+      ],
+    }
+    const stub = await makeStub([
+      response({
+        error: { name: "StructuredOutputError", data: { message: "Model did not produce structured output", retries: 0 } },
+        text: `\`\`\`json\n${JSON.stringify(nestedReview)}\n\`\`\``,
+      }),
+    ])
+    const { round, state } = makeRound([makeFile("a.txt")])
+
+    const result = await runAnalysis(state, round, stub.client)
+
+    expect(stub.requests).toHaveLength(1)
+    expect(result.files).toEqual([
+      { file: "a.txt", purpose: "changes the greeting", confidence: "inference", citations: [] },
+    ])
+    expect(result.hunks).toEqual([
+      { file: "a.txt", hunkIndex: 0, rationale: "reworded", confidence: "inference", citations: [] },
+    ])
+    expect(result.findings).toEqual([
+      { id: "f1", claim: "greeting lost its i18n", citations: [{ source: "a.txt", quote: "hi" }] },
+      { id: "f2", claim: "the replacement may be unclear", citations: [{ source: "a.txt", quote: "hello" }] },
+    ])
+    expect(result.unparsed).toBeUndefined()
+  })
+
   test("batches cap at 5 files or 400 lines; binary files are excluded", async () => {
     const stub = await makeStub([
       response({ structured: validOutput }),

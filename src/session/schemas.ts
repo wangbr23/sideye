@@ -39,6 +39,67 @@ export type AnalysisOutput = z.infer<typeof analysisOutputSchema>
 
 export const analysisJsonSchema = z.toJSONSchema(analysisOutputSchema)
 
+// Some models mimic a conventional review document when the StructuredOutput
+// tool fails: file explanations contain nested hunks and findings use
+// description/note plus evidence/source fields. Normalize that observed shape
+// so useful analysis is not relegated to the raw fallback pane.
+const nestedAnalysisFindingSchema = z.object({
+  id: z.string(),
+  claim: z.string().optional(),
+  description: z.string().optional(),
+  note: z.string().optional(),
+  confidence: confidence.optional(),
+  citations: z.array(evidence).optional(),
+  evidence: z.array(evidence).optional(),
+  source: z.string().optional(),
+  quote: z.string().optional(),
+}).refine((finding) => finding.claim !== undefined || finding.description !== undefined || finding.note !== undefined)
+
+export const nestedAnalysisOutputSchema: z.ZodType<AnalysisOutput> = z.object({
+  files: z.array(
+    z.object({
+      path: z.string(),
+      purpose: z.string(),
+      confidence: confidence.optional(),
+      citations: z.array(evidence).optional(),
+      hunks: z.array(
+        z.object({
+          rationale: z.string(),
+          confidence: confidence.optional(),
+          citations: z.array(evidence).optional(),
+        }),
+      ).optional(),
+    }),
+  ),
+  findings: z.array(nestedAnalysisFindingSchema),
+}).transform((output) => ({
+  files: output.files.map((file) => ({
+    file: file.path,
+    purpose: file.purpose,
+    confidence: file.confidence ?? "inference",
+    citations: file.citations ?? [],
+  })),
+  hunks: output.files.flatMap((file) =>
+    (file.hunks ?? []).map((hunk, hunkIndex) => ({
+      file: file.path,
+      hunkIndex,
+      rationale: hunk.rationale,
+      confidence: hunk.confidence ?? "inference",
+      citations: hunk.citations ?? [],
+    })),
+  ),
+  findings: output.findings.map((finding) => ({
+    id: finding.id,
+    claim: finding.claim ?? finding.description ?? finding.note!,
+    citations:
+      finding.citations
+      ?? finding.evidence
+      ?? (finding.source !== undefined && finding.quote !== undefined
+        ? [{ source: finding.source, quote: finding.quote }]
+        : []),
+  })),
+}))
+
 // Plan output (LLD §5c-2): one approach + affected files per request.
 export const planOutputSchema = z.object({
   perRequest: z.array(

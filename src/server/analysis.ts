@@ -1,7 +1,13 @@
 import type { AnalysisResult, AppState, Round } from "../types.ts"
 import type { AssistantMessage, OpenCodeClient, Part } from "../session/client.ts"
 import { promptWithTimeout, showToast } from "../session/client.ts"
-import { analysisBatches, analysisJsonSchema, analysisOutputSchema, type AnalysisOutput } from "../session/schemas.ts"
+import {
+  analysisBatches,
+  analysisJsonSchema,
+  analysisOutputSchema,
+  nestedAnalysisOutputSchema,
+  type AnalysisOutput,
+} from "../session/schemas.ts"
 import { analysisPrompt } from "../session/prompts.ts"
 import { parseStructuredOutput, replyText } from "./structured.ts"
 import { broadcast } from "./sse.ts"
@@ -136,14 +142,17 @@ export async function runAnalysis(state: AppState, round: Round, client: OpenCod
 }
 
 function parseStructured(info: AssistantMessage, reply: string): { data: AnalysisOutput } | { issues: string } {
-  return parseStructuredOutput(
-    {
-      structured: info.structured,
-      error: info.error === undefined ? undefined : { name: info.error.name, message: describeError(info.error) },
-      text: reply,
-    },
-    analysisOutputSchema,
-  )
+  const attempt = {
+    structured: info.structured,
+    error: info.error === undefined ? undefined : { name: info.error.name, message: describeError(info.error) },
+    text: reply,
+  }
+  const parsed = parseStructuredOutput(attempt, analysisOutputSchema)
+  if ("data" in parsed) return parsed
+
+  const nested = parseStructuredOutput(attempt, nestedAnalysisOutputSchema)
+  if ("data" in nested) return nested
+  return { issues: `${parsed.issues}; nested review output: ${nested.issues}` }
 }
 
 function describeError(error: AssistantMessage["error"]): string {
