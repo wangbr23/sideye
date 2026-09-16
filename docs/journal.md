@@ -305,3 +305,11 @@ Also diagnosed a live analysis failure on the Redeye review: the model spent its
 Addressed three findings from the progress UI review. Analysis batch progress now uses the current batch position, so the final visible batch reaches 100%; the same setter synchronizes visual width with `role="progressbar"` and its ARIA min/max/current values during initial rendering and live updates. Progress event attribution now compares both analysis and agent events with each record's own session ID instead of assuming agent work remains in the originating review session, with regression coverage for a separate agent session.
 
 Verification: `bun test` 171 pass; `bun run typecheck` and `node --check frontend/app.js` clean. Browser-tool verification could not start a second Chrome profile while the active Sideye review held it, so DOM assertions were not rerun in this session.
+
+## 2026-09-16 — nested model review output recovered as analysis
+
+Diagnosed the reported large “Unparsed analysis” panel from the live OpenCode message payload. The model returned valid JSON in a conventional nested review shape (`files[].path`, nested hunks, and findings using `description` or `note`) after its StructuredOutput tool call failed; Sideye only accepted its own flat schema, rejected the useful JSON twice, and displayed the second response verbatim.
+
+Analysis parsing now keeps the canonical schema as the primary contract, then narrowly normalizes the two observed nested finding/citation shapes into Sideye's file analysis, hunk analysis, and findings. Missing confidence is conservatively labeled inference, and absent citations stay empty rather than being invented. Regression coverage uses the live failure shape and asserts that it needs no repair retry and produces no unparsed fallback. Self-review found no remaining correctness issues after replacing an avoidable non-null assertion. The user marked T26's manual acceptance scenarios complete.
+
+Verification: focused analysis suite 13 pass; full suite 172 pass; `bun run typecheck` and `git diff --check` clean.
