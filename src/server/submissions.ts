@@ -5,13 +5,14 @@ export type SubmissionResult<T> = { ok: true; value: T } | { ok: false; error: s
 
 const copyPayload = (payload: SubmitPayload): SubmitPayload => structuredClone(payload)
 
-function approvedRequests(state: AppState): Set<string> {
+function submittedRequests(state: AppState): Set<string> {
   const ids = new Set<string>()
   for (const cycle of state.submissions) {
-    const approved = cycle.approvedPlan === undefined ? undefined : cycle.plans.find((plan) => plan.n === cycle.approvedPlan)
-    for (const request of approved?.payload.requests ?? []) {
-      if (request.origin === "comment") ids.add(`comment:${request.id}`)
-      if (request.finding) ids.add(`finding:${request.finding.round}:${request.finding.findingId}`)
+    for (const plan of cycle.plans) {
+      for (const request of plan.payload.requests) {
+        if (request.origin === "comment") ids.add(`comment:${request.id}`)
+        if (request.finding) ids.add(`finding:${request.finding.round}:${request.finding.findingId}`)
+      }
     }
   }
   return ids
@@ -20,16 +21,16 @@ function approvedRequests(state: AppState): Set<string> {
 function candidatePayload(state: AppState, typed: string[], base?: SubmitPayload): SubmitPayload {
   const requests: WorkRequest[] = base ? copyPayload(base).requests : typed.map((text) => ({ id: crypto.randomUUID(), text, origin: "user" }))
   const covered = new Set(requests.filter((request) => request.origin === "comment").map((request) => `comment:${request.id}`))
-  const approved = approvedRequests(state)
+  const submitted = submittedRequests(state)
   for (const comment of state.comments) {
     const identity = `comment:${comment.id}`
-    if (!approved.has(identity) && !covered.has(identity)) {
+    if (!submitted.has(identity) && !covered.has(identity)) {
       requests.push({ id: comment.id, text: comment.body, origin: "comment", comment: { author: comment.author, anchor: structuredClone(comment.anchor) } })
     }
   }
   for (const accepted of state.acceptedFindings) {
     const identity = `finding:${accepted.round}:${accepted.findingId}`
-    if (approved.has(identity) || requests.some((request) => request.finding?.round === accepted.round && request.finding.findingId === accepted.findingId)) continue
+    if (submitted.has(identity) || requests.some((request) => request.finding?.round === accepted.round && request.finding.findingId === accepted.findingId)) continue
     const finding = state.analysis.get(accepted.round)?.findings.find((item) => item.id === accepted.findingId)
     if (finding) requests.push({ id: crypto.randomUUID(), text: finding.claim, origin: "accepted-finding", finding: { ...accepted } })
   }
