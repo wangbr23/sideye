@@ -81,7 +81,11 @@ export async function runPlan(state: AppState, client: OpenCodeClient, cycleN: n
     await mirrorPlanToTui(state, client, first.info.parentID, plan, version)
     return plan
   } finally {
-    clearProgress(state, "agent")
+    // Only clear if the slot still belongs to this planning flow — the fix
+    // flow may have already claimed it after the plan was approved mid-await.
+    if (state.progress.agent?.kind === "planning") {
+      clearProgress(state, "agent")
+    }
   }
 }
 

@@ -167,6 +167,7 @@ function updateFileNavActive() {
 
 function renderDiff() {
   const pane = document.getElementById("diff-pane")
+  const anchor = scrollAnchor(pane)
   const round = reviewState.rounds.find((r) => r.n === selectedRound)
 
   // Overall comment form and Q&A at the top of the diff
@@ -194,6 +195,33 @@ function renderDiff() {
     return
   }
   pane.replaceChildren(...topElements, ...round.files.map(renderFile))
+  restoreScroll(pane, anchor)
+}
+
+// Capture a scroll anchor: find the first file-section whose top edge is at or
+// above the viewport and record how far it sits from the pane's visible top.
+// After a full re-render (replaceChildren swaps placeholder heights), we restore
+// scroll so the same section stays at the same visual offset.
+function scrollAnchor(pane) {
+  const sections = pane.querySelectorAll(".file-section")
+  for (const section of sections) {
+    const rect = section.getBoundingClientRect()
+    const paneRect = pane.getBoundingClientRect()
+    if (rect.bottom > paneRect.top) {
+      return { id: section.id, offset: rect.top - paneRect.top }
+    }
+  }
+  return null
+}
+
+function restoreScroll(pane, anchor) {
+  if (!anchor) return
+  const section = document.getElementById(anchor.id)
+  if (!section) return
+  const paneRect = pane.getBoundingClientRect()
+  const sectionRect = section.getBoundingClientRect()
+  const currentOffset = sectionRect.top - paneRect.top
+  pane.scrollTop += currentOffset - anchor.offset
 }
 
 function renderAnalysisState(round) {

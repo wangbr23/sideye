@@ -413,6 +413,40 @@ describe("plan flow", () => {
     expect(((await again.json()) as { error: string }).error).toMatch(/stale/)
   })
 
+  test("plan cleanup does not wipe fix progress when the fix flow already claimed the slot", async () => {
+    const stub = await stubOpencode([planFromPrompt], { delayMs: 50 })
+    const state = stateForSubmit()
+    const server = await startWithClient(state, stub.client)
+    const base = `http://127.0.0.1:${server.port}`
+
+    await fetch(`${base}/api/submit`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${state.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ requests: ["split the loop"] }),
+    })
+    await waitUntil(() => state.submissions[0]?.plans[0]?.status === "ready")
+
+    // Simulate the fix flow claiming the agent progress slot before the plan
+    // flow's finally block runs (the race that occurs when mirrorPlanToTui is
+    // still in flight when the user approves the plan).
+    const { setProgress } = await import("../src/server/progress.ts")
+    setProgress(state, "agent", {
+      kind: "fix",
+      phase: "queued",
+      sessionID: state.sessionID,
+      startedAt: new Date().toISOString(),
+    })
+
+    // Wait for the plan flow to fully complete (including mirrorPlanToTui)
+    await waitUntil(() => stub.partUpdates.length > 0)
+    await Bun.sleep(100)
+
+    // The fix progress must survive the plan flow's cleanup
+    expect(state.progress.agent).toBeDefined()
+    expect(state.progress.agent?.kind).toBe("fix")
+    expect(state.progress.agent?.phase).toBe("queued")
+  })
+
   test("submit without a linked client serializes the payload with plan null", async () => {
     const state = stateForSubmit()
     const server = await startWithClient(state, undefined)
